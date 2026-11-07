@@ -1,0 +1,271 @@
+import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
+import { supabase } from "./lib/supabase";
+
+const emptyActivity = {
+  equipment_id: "", component_id: "", requirement_id: "", activity_type: "lubrication",
+  activity_date: new Date().toISOString().slice(0, 10), running_hours: "", lubricant_id: "",
+  quantity: "", quantity_unit: "L", reason: "routine", condition_before: "",
+  condition_after: "", technician_name: "", sap_notification_no: "", remarks: "", status: "completed",
+};
+const emptyOil = {
+  sample_id: "", equipment_id: "", component_id: "", sample_date: new Date().toISOString().slice(0, 10),
+  running_hours: "", oil_hours: "", lubricant_id: "", sample_point: "", laboratory: "",
+  laboratory_report_no: "", viscosity: "", water: "", tan: "", tbn: "", iron: "", copper: "",
+  chromium: "", aluminium: "", silicon: "", sodium: "", particle_count: "", iso_code: "",
+  pq_index: "", status: "normal", recommendation: "", reviewer: "", remarks: "",
+};
+const emptyInventory = { lubricant_id: "", store_location: "", unit: "L", minimum_stock: "", critical_stock: "", current_stock: "" };
+
+function fmtDate(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+}
+function number(value) { const n = Number(value); return Number.isFinite(n) ? n : 0; }
+function labelEquipment(equipment, id) { const e = equipment.find(x => x.id === id); return e ? `${e.sap_equipment_no} — ${e.description}` : "—"; }
+function labelComponent(equipment, components, id) { const c = components.find(x => x.id === id); if (!c) return "—"; const e = equipment.find(x => x.id === c.equipment_id); return `${e?.sap_equipment_no || "—"} — ${c.component_name}`; }
+function labelLubricant(lubricants, id) { const l = lubricants.find(x => x.id === id); return l ? [l.product_code, l.product_name, l.grade].filter(Boolean).join(" — ") : "—"; }
+function Badge({ value, tone }) { return <span className={`module-badge ${tone || String(value || "").toLowerCase().replaceAll(" ", "-")}`}>{value}</span>; }
+function ModulePanel({ title, subtitle, action, children }) { return <section className="module-panel"><div className="module-panel-head"><div><h2>{title}</h2><p>{subtitle}</p></div>{action}</div>{children}</section>; }
+function ModuleForm({ title, subtitle, onClose, children, onSubmit, saving, saveText = "Save" }) { return <section className="module-form"><div className="module-form-head"><div><div className="card-kicker">DATA ENTRY</div><h2>{title}</h2><p>{subtitle}</p></div><button type="button" className="close-button" onClick={onClose}>×</button></div><form onSubmit={onSubmit}>{children}<div className="module-form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Saving..." : saveText}</button></div></form></section>; }
+function MField({ label, full, children }) { return <label className={`field ${full ? "full" : ""}`}><span>{label}</span>{children}</label>; }
+
+export default function RemainingModules({ page, equipment, components, lubricants, requirements, relationships, refresh, setNotice, setError }) {
+  const [runningRows, setRunningRows] = useState([]);
+  const [imports, setImports] = useState([]);
+  const [activities, setActivities] = useState([]);
+  const [oils, setOils] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [inventoryTx, setInventoryTx] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const [profiles, setProfiles] = useState([]);
+  const [settings, setSettings] = useState([]);
+  const [procurement, setProcurement] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const [activityForm, setActivityForm] = useState(emptyActivity);
+  const [oilForm, setOilForm] = useState(emptyOil);
+  const [inventoryForm, setInventoryForm] = useState(emptyInventory);
+  const [showActivity, setShowActivity] = useState(false);
+  const [showOil, setShowOil] = useState(false);
+  const [showInventory, setShowInventory] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [activitySearch, setActivitySearch] = useState("");
+  const [oilSearch, setOilSearch] = useState("");
+  const [alertFilter, setAlertFilter] = useState("open");
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [runningImport, setRunningImport] = useState(null);
+  const [runningMapping, setRunningMapping] = useState({ equipment: "", hours: "", date: "" });
+  const [runningPreview, setRunningPreview] = useState([]);
+  const [runningFileName, setRunningFileName] = useState("");
+  const [settingDraft, setSettingDraft] = useState({});
+
+  async function writeAudit(module, recordId, action, newData) {
+    try {
+      const { data } = await supabase.auth.getUser();
+      await supabase.from("audit_log").insert({ module, record_id: recordId || null, action, new_data: newData || null, changed_by: data?.user?.id || null });
+    } catch (_) { /* Audit failure must not block the operational transaction. */ }
+  }
+
+  async function loadModuleData() {
+    try {
+      const [rh, imp, act, oa, inv, tx, al, pf, st, pr] = await Promise.all([
+        supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000),
+        supabase.from("running_hours_imports").select("*").order("imported_at", { ascending: false }).limit(50),
+        supabase.from("lubrication_activities").select("*").order("activity_date", { ascending: false }).limit(1000),
+        supabase.from("oil_analysis_samples").select("*").order("sample_date", { ascending: false }).limit(500),
+        supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }),
+        supabase.from("lubricant_inventory_transactions").select("*").order("transaction_date", { ascending: false }).limit(1000),
+        supabase.from("system_alerts").select("*").order("created_at", { ascending: false }).limit(500),
+        supabase.from("profiles").select("id,email,full_name,is_admin").order("full_name"),
+        supabase.from("system_settings").select("*").order("setting_key"),
+        supabase.from("procurement_records").select("*").order("delivery_expected", { ascending: true }).limit(500),
+      ]);
+      const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr].find(x => x.error)?.error;
+      if (first) throw new Error(first.message);
+      setRunningRows(rh.data || []); setImports(imp.data || []); setActivities(act.data || []); setOils(oa.data || []);
+      setInventory(inv.data || []); setInventoryTx(tx.data || []); setAlerts(al.data || []); setProfiles(pf.data || []);
+      setSettings(st.data || []); setProcurement(pr.data || []); setLoaded(true);
+    } catch (e) { setError(e.message); }
+  }
+
+  useEffect(() => { if (!loaded) loadModuleData(); }, [loaded]);
+
+  const hoursByEquipment = useMemo(() => {
+    const direct = {};
+    runningRows.forEach(r => { direct[r.equipment_id] = (direct[r.equipment_id] || 0) + number(r.running_hours); });
+    const byParent = {};
+    relationships.filter(r => r.is_active && r.running_hours_rule === "inherit").forEach(r => {
+      (byParent[r.parent_equipment_id] ||= []).push(r.child_equipment_id);
+    });
+    const resolved = { ...direct };
+    const visiting = new Set();
+    function resolve(id) {
+      if (resolved[id] != null) return resolved[id];
+      if (visiting.has(id)) return null;
+      visiting.add(id);
+      const parents = relationships.filter(r => r.is_active && r.child_equipment_id === id && r.running_hours_rule === "inherit");
+      const parentHours = parents.map(r => resolve(r.parent_equipment_id)).filter(x => x != null);
+      visiting.delete(id);
+      if (parentHours.length) resolved[id] = Math.max(...parentHours);
+      return resolved[id] ?? null;
+    }
+    equipment.forEach(e => resolve(e.id));
+    return resolved;
+  }, [runningRows, relationships, equipment]);
+
+  const scheduleRows = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    return requirements.filter(r => r.is_active && r.approval_status === "approved").map(r => {
+      const c = components.find(x => x.id === r.component_id); const eq = equipment.find(x => x.id === c?.equipment_id);
+      if (!c || !eq) return null;
+      const history = activities.filter(a => a.requirement_id === r.id && a.status === "completed").sort((a,b) => new Date(b.activity_date) - new Date(a.activity_date));
+      const last = history[0];
+      const currentHours = hoursByEquipment[eq.id] ?? null;
+      const calendarDue = last?.activity_date && r.interval_days ? new Date(new Date(last.activity_date).getTime() + r.interval_days * 86400000) : (r.effective_from ? new Date(r.effective_from) : today);
+      const hoursDue = last?.running_hours != null && r.interval_hours ? number(last.running_hours) + number(r.interval_hours) : (r.interval_hours ? currentHours : null);
+      const calendarDays = calendarDue ? Math.ceil((calendarDue - today) / 86400000) : null;
+      const hourDelta = hoursDue != null && currentHours != null ? hoursDue - currentHours : null;
+      let status = "scheduled";
+      let dueReason = "Calendar";
+      if (r.frequency_basis === "running_hours") { dueReason = "Running hours"; status = hourDelta != null && hourDelta <= 0 ? "overdue" : hourDelta != null && hourDelta <= 50 ? "due-soon" : "scheduled"; }
+      else if (r.frequency_basis === "calendar") { status = calendarDays <= 0 ? "overdue" : calendarDays <= 7 ? "due-soon" : "scheduled"; }
+      else {
+        const hourDue = hourDelta != null && hourDelta <= 0; const dateDue = calendarDays != null && calendarDays <= 0;
+        status = hourDue || dateDue ? "overdue" : ((hourDelta != null && hourDelta <= 50) || (calendarDays != null && calendarDays <= 7)) ? "due-soon" : "scheduled";
+        dueReason = hourDue && dateDue ? "Both" : hourDue ? "Running hours" : "Calendar";
+      }
+      return { ...r, component: c, equipment: eq, last, currentHours, calendarDue, hoursDue, status, dueReason, calendarDays, hourDelta };
+    }).filter(Boolean).sort((a,b) => ({ overdue: 0, "due-soon": 1, scheduled: 2 }[a.status] - ({ overdue: 0, "due-soon": 1, scheduled: 2 }[b.status])));
+  }, [requirements, components, equipment, activities, hoursByEquipment]);
+
+  const derivedAlerts = useMemo(() => {
+    const result = [];
+    scheduleRows.filter(x => x.status === "overdue").forEach(x => result.push({ id: `schedule-${x.id}`, title: "Lubrication overdue", message: `${x.equipment.sap_equipment_no} / ${x.component.component_name} requires ${x.method || "lubrication"}.`, severity: "high", status: "open", source: "Work Schedule" }));
+    inventory.forEach(i => { const stock = number(i.current_stock); if (i.critical_stock != null && stock <= number(i.critical_stock)) result.push({ id: `stock-${i.id}`, title: "Critical lubricant stock", message: `${labelLubricant(lubricants, i.lubricant_id)} is at ${stock} ${i.unit || "unit"}.`, severity: "critical", status: "open", source: "Inventory" }); else if (i.minimum_stock != null && stock <= number(i.minimum_stock)) result.push({ id: `stock-${i.id}`, title: "Low lubricant stock", message: `${labelLubricant(lubricants, i.lubricant_id)} is below minimum stock.`, severity: "medium", status: "open", source: "Inventory" }); });
+    oils.filter(x => ["alarm", "critical", "warning"].includes(String(x.status).toLowerCase())).forEach(x => result.push({ id: `oil-${x.id}`, title: "Oil analysis attention", message: `${x.sample_id || "Sample"} for ${labelEquipment(equipment, x.equipment_id)} is ${x.status}.`, severity: String(x.status).toLowerCase() === "critical" ? "critical" : "high", status: "open", source: "Oil Analysis" }));
+    return [...result, ...alerts];
+  }, [scheduleRows, inventory, oils, alerts, lubricants, equipment]);
+
+  async function saveActivity(e) {
+    e.preventDefault(); setSaving(true); setError("");
+    try {
+      const payload = { ...activityForm, equipment_id: activityForm.equipment_id, component_id: activityForm.component_id || null, requirement_id: activityForm.requirement_id || null, lubricant_id: activityForm.lubricant_id || null, running_hours: activityForm.running_hours === "" ? null : number(activityForm.running_hours), quantity: activityForm.quantity === "" ? null : number(activityForm.quantity) };
+      const { error } = await supabase.from("lubrication_activities").insert(payload); if (error) throw new Error(error.message);
+      setActivityForm(emptyActivity); setShowActivity(false); setNotice("Lubrication activity recorded."); await writeAudit("Activities", null, "create", payload); await loadModuleData();
+    } catch (e2) { setError(e2.message); } finally { setSaving(false); }
+  }
+  async function saveOil(e) {
+    e.preventDefault(); setSaving(true); setError("");
+    try {
+      const payload = { ...oilForm, equipment_id: oilForm.equipment_id, component_id: oilForm.component_id || null, lubricant_id: oilForm.lubricant_id || null, running_hours: oilForm.running_hours === "" ? null : number(oilForm.running_hours), oil_hours: oilForm.oil_hours === "" ? null : number(oilForm.oil_hours) };
+      const { error } = await supabase.from("oil_analysis_samples").insert(payload); if (error) throw new Error(error.message);
+      setOilForm(emptyOil); setShowOil(false); setNotice("Oil-analysis sample saved."); await writeAudit("Oil Analysis", null, "create", payload); await loadModuleData();
+    } catch (e2) { setError(e2.message); } finally { setSaving(false); }
+  }
+  async function saveInventory(e) {
+    e.preventDefault(); setSaving(true); setError("");
+    try {
+      const payload = { ...inventoryForm, lubricant_id: inventoryForm.lubricant_id, minimum_stock: number(inventoryForm.minimum_stock), critical_stock: number(inventoryForm.critical_stock), current_stock: number(inventoryForm.current_stock), updated_at: new Date().toISOString() };
+      const existing = inventory.find(x => x.lubricant_id === payload.lubricant_id && x.store_location === payload.store_location);
+      const result = existing ? await supabase.from("lubricant_inventory").update(payload).eq("id", existing.id) : await supabase.from("lubricant_inventory").insert(payload);
+      if (result.error) throw new Error(result.error.message);
+      setInventoryForm(emptyInventory); setShowInventory(false); setNotice("Inventory balance saved."); await writeAudit("Inventory", existing?.id || null, existing ? "update" : "create", payload); await loadModuleData();
+    } catch (e2) { setError(e2.message); } finally { setSaving(false); }
+  }
+
+  function parseRunningFile(file) {
+    setRunningFileName(file.name); setRunningPreview([]); setRunningMapping({ equipment: "", hours: "", date: "" });
+    const reader = new FileReader(); reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" }); const sheet = wb.Sheets[wb.SheetNames[0]]; const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+        setRunningPreview(rows.slice(0, 10)); setRunningImport(rows);
+        const keys = rows.length ? Object.keys(rows[0]) : [];
+        const find = terms => keys.find(k => terms.some(t => k.toLowerCase().includes(t))) || "";
+        setRunningMapping({ equipment: find(["equipment", "equip", "aufnr", "sap"]), hours: find(["running hour", "run hour", "hours", "operating"]), date: find(["date", "period", "posting"]) });
+      } catch (e2) { setError(`Could not read Excel file: ${e2.message}`); }
+    }; reader.readAsArrayBuffer(file);
+  }
+  async function importRunningHours() {
+    if (!runningImport?.length) return setError("Choose an Excel file first.");
+    if (!runningMapping.equipment || !runningMapping.hours) return setError("Map SAP Equipment # and Running Hours before importing.");
+    setSaving(true); setError("");
+    try {
+      const periodFrom = runningMapping.date ? runningImport.map(r => new Date(r[runningMapping.date])).filter(d => !Number.isNaN(d.getTime())).sort((a,b)=>a-b)[0] : new Date();
+      const periodTo = runningMapping.date ? runningImport.map(r => new Date(r[runningMapping.date])).filter(d => !Number.isNaN(d.getTime())).sort((a,b)=>b-a)[0] : new Date();
+      const { data: imp, error: impError } = await supabase.from("running_hours_imports").insert({ file_name: runningFileName, period_from: periodFrom?.toISOString().slice(0,10), period_to: periodTo?.toISOString().slice(0,10), total_rows: runningImport.length, import_status: "processing" }).select().single();
+      if (impError) throw new Error(impError.message);
+      const bySap = new Map(equipment.map(x => [String(x.sap_equipment_no).trim().toLowerCase(), x]));
+      const grouped = new Map(); let unmatched = 0;
+      runningImport.forEach((row, idx) => { const sap = String(row[runningMapping.equipment] ?? "").trim(); const eq = bySap.get(sap.toLowerCase()); const hours = number(row[runningMapping.hours]); if (!eq || !sap) { unmatched++; return; } const key = eq.id; grouped.set(key, (grouped.get(key) || 0) + hours); });
+      const records = [...grouped.entries()].map(([equipment_id, hours]) => ({ import_id: imp.id, equipment_id, sap_equipment_no: equipment.find(x => x.id === equipment_id)?.sap_equipment_no, period_from: periodFrom?.toISOString().slice(0,10), period_to: periodTo?.toISOString().slice(0,10), running_hours: hours, source_type: "sap_period", source_file: runningFileName }));
+      if (records.length) { const { error } = await supabase.from("running_hours_records").upsert(records, { onConflict: "equipment_id,period_from,period_to" }); if (error) throw new Error(error.message); }
+      const { error: updateError } = await supabase.from("running_hours_imports").update({ matched_rows: runningImport.length - unmatched, unmatched_rows: unmatched, import_status: "completed" }).eq("id", imp.id); if (updateError) throw new Error(updateError.message);
+      setNotice(`Running-hours import completed: ${records.length} equipment matched, ${unmatched} rows unmatched.`); await writeAudit("Running Hours", imp.id, "import", { file_name: runningFileName, matched: records.length, unmatched }); setRunningImport(null); setRunningPreview([]); setRunningFileName(""); await loadModuleData();
+    } catch (e2) { setError(e2.message); } finally { setSaving(false); }
+  }
+  async function acknowledgeAlert(item) {
+    const existing = alerts.find(x => x.id === item.id); if (!existing) { setNotice("This is a live calculated alert; it will clear automatically when the condition is corrected."); return; }
+    const { error } = await supabase.from("system_alerts").update({ status: "acknowledged", acknowledged_at: new Date().toISOString() }).eq("id", item.id); if (error) setError(error.message); else { setNotice("Alert acknowledged."); await loadModuleData(); }
+  }
+  async function saveSetting(key) {
+    const value = settingDraft[key]; const existing = settings.find(x => x.setting_key === key);
+    const result = existing ? await supabase.from("system_settings").update({ setting_value: value, updated_at: new Date().toISOString() }).eq("id", existing.id) : await supabase.from("system_settings").insert({ setting_key: key, setting_value: value });
+    if (result.error) setError(result.error.message); else { setNotice("Setting saved."); await writeAudit("Settings", existing?.id || null, existing ? "update" : "create", { setting_key: key, setting_value: value }); await loadModuleData(); }
+  }
+  async function updateProfile(id, patch) { const { error } = await supabase.from("profiles").update(patch).eq("id", id); if (error) setError(error.message); else { setNotice("User profile updated."); await writeAudit("User Management", id, "update", patch); await loadModuleData(); } }
+
+  const filteredActivities = activities.filter(a => [labelEquipment(equipment,a.equipment_id), labelComponent(equipment,components,a.component_id), a.activity_type, a.technician_name, a.sap_notification_no, a.remarks].join(" ").toLowerCase().includes(activitySearch.toLowerCase()));
+  const filteredOils = oils.filter(o => [o.sample_id, labelEquipment(equipment,o.equipment_id), labelComponent(equipment,components,o.component_id), o.laboratory, o.status, o.recommendation].join(" ").toLowerCase().includes(oilSearch.toLowerCase()));
+  const filteredInventory = inventory.filter(i => [labelLubricant(lubricants,i.lubricant_id), i.store_location, i.unit].join(" ").toLowerCase().includes(inventorySearch.toLowerCase()));
+
+  if (page === "Work Schedule") return <>
+    <ModulePanel title="Lubrication work schedule" subtitle={`${scheduleRows.length} approved requirements evaluated against current calendar and running hours.`} action={<button className="secondary-button" onClick={loadModuleData}>Refresh schedule</button>}>
+      <div className="schedule-summary"><div><b>{scheduleRows.filter(x=>x.status==="overdue").length}</b><span>Overdue</span></div><div><b>{scheduleRows.filter(x=>x.status==="due-soon").length}</b><span>Due soon</span></div><div><b>{scheduleRows.filter(x=>x.status==="scheduled").length}</b><span>Scheduled</span></div></div>
+      <div className="table-wrap"><table><thead><tr><th>EQUIPMENT</th><th>COMPONENT</th><th>ACTIVITY</th><th>DUE DATE</th><th>DUE HOURS</th><th>CURRENT HOURS</th><th>TRIGGER</th><th>STATUS</th></tr></thead><tbody>{scheduleRows.map(x=><tr key={x.id}><td><strong>{x.equipment.sap_equipment_no}</strong><small className="cell-sub">{x.equipment.description}</small></td><td>{x.component.component_name}</td><td>{x.method || "Lubrication"}</td><td>{fmtDate(x.calendarDue)}</td><td>{x.hoursDue == null ? "—" : `${Math.round(x.hoursDue)} h`}</td><td>{x.currentHours == null ? "—" : `${Math.round(x.currentHours)} h`}</td><td>{x.dueReason}</td><td><Badge value={x.status} tone={x.status}/></td></tr>)}</tbody></table></div>
+    </ModulePanel>
+  </>;
+
+  if (page === "Activities") return <>
+    {showActivity && <ModuleForm title="Record lubrication activity" subtitle="Record actual work independently of whether an SAP notification exists." onClose={()=>setShowActivity(false)} onSubmit={saveActivity} saving={saving} saveText="Record activity"><div className="module-form-grid"><MField label="Equipment"><select required value={activityForm.equipment_id} onChange={e=>setActivityForm({...activityForm,equipment_id:e.target.value,component_id:""})}><option value="">Select equipment</option>{equipment.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></MField><MField label="Component"><select value={activityForm.component_id} onChange={e=>setActivityForm({...activityForm,component_id:e.target.value})}><option value="">Select component</option>{components.filter(x=>x.equipment_id===activityForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField><MField label="Requirement"><select value={activityForm.requirement_id} onChange={e=>setActivityForm({...activityForm,requirement_id:e.target.value})}><option value="">Not linked</option>{requirements.filter(x=>x.component_id===activityForm.component_id && x.is_active).map(x=><option key={x.id} value={x.id}>{x.method || "Lubrication requirement"}</option>)}</select></MField><MField label="Activity type"><select value={activityForm.activity_type} onChange={e=>setActivityForm({...activityForm,activity_type:e.target.value})}>{["lubrication","greasing","top_up","oil_replacement","inspection","oil_level_check","condition_check","other"].map(x=><option key={x} value={x}>{x.replaceAll("_"," ")}</option>)}</select></MField><MField label="Activity date"><input type="date" required value={activityForm.activity_date} onChange={e=>setActivityForm({...activityForm,activity_date:e.target.value})}/></MField><MField label="Running hours"><input type="number" min="0" step="0.1" value={activityForm.running_hours} onChange={e=>setActivityForm({...activityForm,running_hours:e.target.value})}/></MField><MField label="Lubricant"><select value={activityForm.lubricant_id} onChange={e=>setActivityForm({...activityForm,lubricant_id:e.target.value})}><option value="">Not specified</option>{lubricants.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField><MField label="Quantity"><input type="number" min="0" step="any" value={activityForm.quantity} onChange={e=>setActivityForm({...activityForm,quantity:e.target.value})}/></MField><MField label="Unit"><input value={activityForm.quantity_unit} onChange={e=>setActivityForm({...activityForm,quantity_unit:e.target.value})}/></MField><MField label="Reason"><select value={activityForm.reason} onChange={e=>setActivityForm({...activityForm,reason:e.target.value})}>{["routine","inspection_finding","emergency","corrective_action","low_oil_level","leakage","oil_analysis_recommendation","other"].map(x=><option key={x} value={x}>{x.replaceAll("_"," ")}</option>)}</select></MField><MField label="Technician / performer"><input value={activityForm.technician_name} onChange={e=>setActivityForm({...activityForm,technician_name:e.target.value})}/></MField><MField label="SAP Notification #"><input value={activityForm.sap_notification_no} onChange={e=>setActivityForm({...activityForm,sap_notification_no:e.target.value})}/></MField><MField label="Condition before"><input value={activityForm.condition_before} onChange={e=>setActivityForm({...activityForm,condition_before:e.target.value})}/></MField><MField label="Condition after"><input value={activityForm.condition_after} onChange={e=>setActivityForm({...activityForm,condition_after:e.target.value})}/></MField><MField label="Remarks" full><textarea rows="3" value={activityForm.remarks} onChange={e=>setActivityForm({...activityForm,remarks:e.target.value})}/></MField></div></ModuleForm>}
+    <ModulePanel title="Lubrication activities" subtitle={`${filteredActivities.length} activity records`} action={<div className="module-toolbar"><input placeholder="Search activities..." value={activitySearch} onChange={e=>setActivitySearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowActivity(true)}>+ Record activity</button></div>}><div className="table-wrap"><table><thead><tr><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>ACTIVITY</th><th>LUBRICANT</th><th>QTY</th><th>RUNNING HOURS</th><th>TECHNICIAN</th><th>SAP NOTIFICATION</th><th>STATUS</th></tr></thead><tbody>{filteredActivities.map(a=><tr key={a.id}><td>{fmtDate(a.activity_date)}</td><td><strong>{labelEquipment(equipment,a.equipment_id)}</strong></td><td>{labelComponent(equipment,components,a.component_id)}</td><td>{a.activity_type?.replaceAll("_"," ")}</td><td>{labelLubricant(lubricants,a.lubricant_id)}</td><td>{a.quantity == null ? "—" : `${a.quantity} ${a.quantity_unit || ""}`}</td><td>{a.running_hours == null ? "—" : `${a.running_hours} h`}</td><td>{a.technician_name || "—"}</td><td>{a.sap_notification_no || "—"}</td><td><Badge value={a.status}/></td></tr>)}</tbody></table></div></ModulePanel>
+  </>;
+
+  if (page === "Running Hours") return <>
+    <ModulePanel title="SAP COOISPI running-hours import" subtitle="Upload the controlled Excel export, map its columns, preview the rows, then import. Equipment relationships are applied when calculating current hours." action={<label className="primary-button file-button">Choose Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>e.target.files?.[0]&&parseRunningFile(e.target.files[0])}/></label>}>
+      {runningImport && <><div className="import-meta"><strong>{runningFileName}</strong><span>{runningImport.length} rows detected</span></div><div className="module-form-grid"><MField label="SAP Equipment # column"><select value={runningMapping.equipment} onChange={e=>setRunningMapping({...runningMapping,equipment:e.target.value})}><option value="">Select column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField><MField label="Running Hours column"><select value={runningMapping.hours} onChange={e=>setRunningMapping({...runningMapping,hours:e.target.value})}><option value="">Select column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField><MField label="Date / period column (optional)"><select value={runningMapping.date} onChange={e=>setRunningMapping({...runningMapping,date:e.target.value})}><option value="">No date column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField></div><div className="form-actions-inline"><button className="primary-button" onClick={importRunningHours} disabled={saving}>Import validated rows</button></div><div className="table-wrap"><table><thead><tr>{Object.keys(runningPreview[0] || {}).slice(0,8).map(k=><th key={k}>{k}</th>)}</tr></thead><tbody>{runningPreview.map((r,i)=><tr key={i}>{Object.keys(r).slice(0,8).map(k=><td key={k}>{String(r[k])}</td>)}</tr>)}</tbody></table></div></>}
+      {!runningImport && <div className="module-empty"><strong>Controlled import</strong><p>Start with the COOISPI Excel file. The importer validates the SAP Equipment # against your equipment master and never silently imports unmatched rows.</p></div>}
+    </ModulePanel>
+    <div className="module-grid-2"><ModulePanel title="Current running hours" subtitle="Direct SAP hours plus inherited relationship logic"><div className="table-wrap"><table><thead><tr><th>EQUIPMENT</th><th>SAP HOURS</th><th>CALCULATED HOURS</th><th>SOURCE</th></tr></thead><tbody>{equipment.filter(x=>x.status==="active").map(e=>{const directRows=runningRows.filter(r=>r.equipment_id===e.id); const directTotal=directRows.reduce((sum,r)=>sum+number(r.running_hours),0); const calc=hoursByEquipment[e.id]; return <tr key={e.id}><td><strong>{e.sap_equipment_no}</strong><small className="cell-sub">{e.description}</small></td><td>{directRows.length ? `${Math.round(directTotal)} h` : "—"}</td><td>{calc == null ? "—" : <strong>{Math.round(calc)} h</strong>}</td><td>{directRows.length ? "SAP COOISPI" : "Relationship inheritance"}</td></tr>})}</tbody></table></div></ModulePanel><ModulePanel title="Import history" subtitle="Every running-hours import remains traceable"><div className="table-wrap"><table><thead><tr><th>FILE</th><th>PERIOD</th><th>ROWS</th><th>MATCHED</th><th>UNMATCHED</th><th>STATUS</th></tr></thead><tbody>{imports.map(i=><tr key={i.id}><td>{i.file_name}</td><td>{fmtDate(i.period_from)} – {fmtDate(i.period_to)}</td><td>{i.total_rows}</td><td>{i.matched_rows ?? "—"}</td><td>{i.unmatched_rows ?? "—"}</td><td><Badge value={i.import_status}/></td></tr>)}</tbody></table></div></ModulePanel></div>
+  </>;
+
+  if (page === "Oil Analysis") return <>
+    {showOil && <ModuleForm title="Enter oil-analysis sample" subtitle="Structured results stay searchable and can be trended later." onClose={()=>setShowOil(false)} onSubmit={saveOil} saving={saving} saveText="Save sample"><div className="module-form-grid"><MField label="Sample ID"><input required value={oilForm.sample_id} onChange={e=>setOilForm({...oilForm,sample_id:e.target.value})}/></MField><MField label="Sample date"><input type="date" required value={oilForm.sample_date} onChange={e=>setOilForm({...oilForm,sample_date:e.target.value})}/></MField><MField label="Equipment"><select required value={oilForm.equipment_id} onChange={e=>setOilForm({...oilForm,equipment_id:e.target.value,component_id:""})}><option value="">Select equipment</option>{equipment.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></MField><MField label="Component"><select value={oilForm.component_id} onChange={e=>setOilForm({...oilForm,component_id:e.target.value})}><option value="">Not specified</option>{components.filter(x=>x.equipment_id===oilForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField><MField label="Running hours"><input type="number" value={oilForm.running_hours} onChange={e=>setOilForm({...oilForm,running_hours:e.target.value})}/></MField><MField label="Oil hours"><input type="number" value={oilForm.oil_hours} onChange={e=>setOilForm({...oilForm,oil_hours:e.target.value})}/></MField><MField label="Lubricant"><select value={oilForm.lubricant_id} onChange={e=>setOilForm({...oilForm,lubricant_id:e.target.value})}><option value="">Not specified</option>{lubricants.map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField><MField label="Sample point"><input value={oilForm.sample_point} onChange={e=>setOilForm({...oilForm,sample_point:e.target.value})}/></MField><MField label="Laboratory"><input value={oilForm.laboratory} onChange={e=>setOilForm({...oilForm,laboratory:e.target.value})}/></MField><MField label="Laboratory report #"><input value={oilForm.laboratory_report_no} onChange={e=>setOilForm({...oilForm,laboratory_report_no:e.target.value})}/></MField><MField label="Viscosity"><input value={oilForm.viscosity} onChange={e=>setOilForm({...oilForm,viscosity:e.target.value})}/></MField><MField label="Water"><input value={oilForm.water} onChange={e=>setOilForm({...oilForm,water:e.target.value})}/></MField><MField label="TAN"><input value={oilForm.tan} onChange={e=>setOilForm({...oilForm,tan:e.target.value})}/></MField><MField label="TBN"><input value={oilForm.tbn} onChange={e=>setOilForm({...oilForm,tbn:e.target.value})}/></MField><MField label="Iron"><input value={oilForm.iron} onChange={e=>setOilForm({...oilForm,iron:e.target.value})}/></MField><MField label="Copper"><input value={oilForm.copper} onChange={e=>setOilForm({...oilForm,copper:e.target.value})}/></MField><MField label="Chromium"><input value={oilForm.chromium} onChange={e=>setOilForm({...oilForm,chromium:e.target.value})}/></MField><MField label="Aluminium"><input value={oilForm.aluminium} onChange={e=>setOilForm({...oilForm,aluminium:e.target.value})}/></MField><MField label="Silicon"><input value={oilForm.silicon} onChange={e=>setOilForm({...oilForm,silicon:e.target.value})}/></MField><MField label="Particle count"><input value={oilForm.particle_count} onChange={e=>setOilForm({...oilForm,particle_count:e.target.value})}/></MField><MField label="ISO cleanliness code"><input value={oilForm.iso_code} onChange={e=>setOilForm({...oilForm,iso_code:e.target.value})}/></MField><MField label="PQ index"><input value={oilForm.pq_index} onChange={e=>setOilForm({...oilForm,pq_index:e.target.value})}/></MField><MField label="Status"><select value={oilForm.status} onChange={e=>setOilForm({...oilForm,status:e.target.value})}><option>normal</option><option>warning</option><option>alarm</option><option>critical</option></select></MField><MField label="Reviewer"><input value={oilForm.reviewer} onChange={e=>setOilForm({...oilForm,reviewer:e.target.value})}/></MField><MField label="Recommendation" full><textarea rows="3" value={oilForm.recommendation} onChange={e=>setOilForm({...oilForm,recommendation:e.target.value})}/></MField><MField label="Remarks" full><textarea rows="3" value={oilForm.remarks} onChange={e=>setOilForm({...oilForm,remarks:e.target.value})}/></MField></div></ModuleForm>}
+    <ModulePanel title="Oil analysis" subtitle={`${filteredOils.length} samples`} action={<div className="module-toolbar"><input placeholder="Search samples..." value={oilSearch} onChange={e=>setOilSearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowOil(true)}>+ Add sample</button></div>}><div className="oil-kpis"><div><b>{oils.length}</b><span>Samples</span></div><div><b>{oils.filter(x=>x.status==="normal").length}</b><span>Normal</span></div><div><b>{oils.filter(x=>x.status==="warning").length}</b><span>Warning</span></div><div><b>{oils.filter(x=>["alarm","critical"].includes(x.status)).length}</b><span>Alarm / Critical</span></div></div><div className="table-wrap"><table><thead><tr><th>SAMPLE</th><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>LAB</th><th>VISCOSITY</th><th>IRON</th><th>WATER</th><th>STATUS</th><th>RECOMMENDATION</th></tr></thead><tbody>{filteredOils.map(o=><tr key={o.id}><td><strong>{o.sample_id}</strong></td><td>{fmtDate(o.sample_date)}</td><td>{labelEquipment(equipment,o.equipment_id)}</td><td>{labelComponent(equipment,components,o.component_id)}</td><td>{o.laboratory || "—"}</td><td>{o.viscosity || "—"}</td><td>{o.iron || "—"}</td><td>{o.water || "—"}</td><td><Badge value={o.status}/></td><td>{o.recommendation || "—"}</td></tr>)}</tbody></table></div></ModulePanel>
+  </>;
+
+  if (page === "Inventory") return <>
+    {showInventory && <ModuleForm title="Set lubricant stock" subtitle="Maintain the current stock snapshot and thresholds for a store location." onClose={()=>setShowInventory(false)} onSubmit={saveInventory} saving={saving} saveText="Save stock"><div className="module-form-grid"><MField label="Lubricant"><select required value={inventoryForm.lubricant_id} onChange={e=>setInventoryForm({...inventoryForm,lubricant_id:e.target.value})}><option value="">Select lubricant</option>{lubricants.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField><MField label="Store location"><input value={inventoryForm.store_location} onChange={e=>setInventoryForm({...inventoryForm,store_location:e.target.value})} placeholder="e.g. Central Lubricant Store"/></MField><MField label="Unit"><input value={inventoryForm.unit} onChange={e=>setInventoryForm({...inventoryForm,unit:e.target.value})}/></MField><MField label="Current stock"><input type="number" step="any" value={inventoryForm.current_stock} onChange={e=>setInventoryForm({...inventoryForm,current_stock:e.target.value})}/></MField><MField label="Minimum stock"><input type="number" step="any" value={inventoryForm.minimum_stock} onChange={e=>setInventoryForm({...inventoryForm,minimum_stock:e.target.value})}/></MField><MField label="Critical stock"><input type="number" step="any" value={inventoryForm.critical_stock} onChange={e=>setInventoryForm({...inventoryForm,critical_stock:e.target.value})}/></MField></div></ModuleForm>}
+    <ModulePanel title="Lubricant inventory" subtitle="Current stock, minimum stock and material risk visibility" action={<div className="module-toolbar"><input placeholder="Search inventory..." value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowInventory(true)}>+ Set stock</button></div>}><div className="inventory-kpis"><div><b>{inventory.length}</b><span>Stock items</span></div><div><b>{inventory.filter(x=>number(x.current_stock)<=number(x.minimum_stock)).length}</b><span>Low stock</span></div><div><b>{inventory.filter(x=>number(x.current_stock)<=number(x.critical_stock)).length}</b><span>Critical stock</span></div><div><b>{procurement.filter(x=>!["Closed","Cancelled","Fully Received"].includes(x.status)).length}</b><span>Open procurement</span></div></div><div className="table-wrap"><table><thead><tr><th>LUBRICANT</th><th>STORE</th><th>CURRENT</th><th>MINIMUM</th><th>CRITICAL</th><th>OPEN PROCUREMENT</th><th>STATUS</th></tr></thead><tbody>{filteredInventory.map(i=>{const p=procurement.filter(x=>x.item_code===lubricants.find(l=>l.id===i.lubricant_id)?.product_code && !["Closed","Cancelled","Fully Received"].includes(x.status)).reduce((s,x)=>s+number(x.quantity),0); const status=number(i.current_stock)<=number(i.critical_stock)?"critical":number(i.current_stock)<=number(i.minimum_stock)?"low":"healthy"; return <tr key={i.id}><td><strong>{labelLubricant(lubricants,i.lubricant_id)}</strong></td><td>{i.store_location || "—"}</td><td>{i.current_stock} {i.unit}</td><td>{i.minimum_stock} {i.unit}</td><td>{i.critical_stock} {i.unit}</td><td>{p ? `${p} ${i.unit}` : "—"}</td><td><Badge value={status} tone={status}/></td></tr>})}</tbody></table></div></ModulePanel>
+  </>;
+
+  if (page === "Alerts") {
+    const visible = derivedAlerts.filter(a => alertFilter === "all" || String(a.status).toLowerCase() === alertFilter);
+    return <ModulePanel title="Alerts and attention" subtitle="Actionable schedule, oil-analysis, inventory and data-quality signals." action={<select className="alert-filter" value={alertFilter} onChange={e=>setAlertFilter(e.target.value)}><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="all">All</option></select>}><div className="alert-summary"><div><b>{derivedAlerts.filter(x=>x.status==="open").length}</b><span>Open</span></div><div><b>{derivedAlerts.filter(x=>x.severity==="critical").length}</b><span>Critical</span></div><div><b>{derivedAlerts.filter(x=>x.source==="Work Schedule").length}</b><span>Schedule</span></div><div><b>{derivedAlerts.filter(x=>x.source==="Inventory").length}</b><span>Inventory</span></div></div><div className="alert-list">{visible.map(a=><div className="alert-row" key={a.id}><div className={`alert-severity ${a.severity}`}/><div className="alert-main"><strong>{a.title}</strong><p>{a.message}</p><small>{a.source || "System"}</small></div><Badge value={a.status}/>{a.status === "open" && <button className="table-action" onClick={()=>acknowledgeAlert(a)}>Acknowledge</button>}</div>)}{!visible.length && <div className="module-empty"><strong>No alerts in this view</strong><p>The system will show attention items here as schedule, oil-analysis and inventory conditions change.</p></div>}</div></ModulePanel>;
+  }
+
+  if (page === "Reports") {
+    const completed = activities.filter(a=>a.status==="completed"); const qty = completed.reduce((s,a)=>s+number(a.quantity),0); const overdue = scheduleRows.filter(x=>x.status==="overdue").length; const abnormal = oils.filter(x=>x.status!=="normal").length;
+    async function exportReport() { const rows = completed.map(a=>({ Date:a.activity_date, Equipment:labelEquipment(equipment,a.equipment_id), Component:labelComponent(equipment,components,a.component_id), Activity:a.activity_type, Lubricant:labelLubricant(lubricants,a.lubricant_id), Quantity:a.quantity, Unit:a.quantity_unit, RunningHours:a.running_hours, Technician:a.technician_name, SAPNotification:a.sap_notification_no, Status:a.status })); const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([{Metric:"Total activities",Value:completed.length},{Metric:"Total recorded quantity",Value:qty},{Metric:"Overdue requirements",Value:overdue},{Metric:"Abnormal oil samples",Value:abnormal}]),"Summary"); XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),"Activities"); XLSX.writeFile(wb,`Lubrication_Report_${new Date().toISOString().slice(0,7)}.xlsx`); }
+    return <><div className="report-hero"><div><div className="card-kicker">MANAGEMENT REPORT</div><h2>Lubrication performance</h2><p>Standardized management view based on the application records currently available.</p></div><button className="primary-button" onClick={exportReport}>Export Excel report</button></div><div className="report-kpis"><div><b>{completed.length}</b><span>Completed activities</span></div><div><b>{qty.toFixed(1)}</b><span>Recorded quantity</span></div><div><b>{overdue}</b><span>Overdue requirements</span></div><div><b>{abnormal}</b><span>Abnormal oil samples</span></div></div><div className="module-grid-2"><ModulePanel title="Report sections" subtitle="The monthly report is designed around the project specification."><ul className="report-list"><li>Executive summary</li><li>Lubrication activities</li><li>Oil replacements and greasing</li><li>Top-ups and consumption</li><li>Oil analysis</li><li>Overdue activities</li><li>Stock status</li><li>Procurement</li><li>Abnormal findings and corrective actions</li></ul></ModulePanel><ModulePanel title="Data freshness" subtitle="Imported SAP data should always be treated as time-bound."><div className="freshness-list"><div><strong>Running hours</strong><span>{imports[0] ? `Last import ${fmtDate(imports[0].imported_at)}` : "No import yet"}</span></div><div><strong>Equipment master</strong><span>Current application master</span></div><div><strong>Material stock</strong><span>Current inventory snapshot</span></div></div></ModulePanel></div></>;
+  }
+
+  if (page === "User Management") return <ModulePanel title="Controlled users" subtitle="Users are still created manually through Supabase Auth. This screen manages their application profile fields; it does not expose a service-role key in the browser."><div className="info-banner"><div className="banner-icon">i</div><div><strong>Security boundary</strong><p>Create authentication users in Supabase. Use this portal only for profile/role metadata and application permissions.</p></div></div><div className="table-wrap"><table><thead><tr><th>EMAIL</th><th>FULL NAME</th><th>ADMIN</th><th>ACTION</th></tr></thead><tbody>{profiles.map(p=><tr key={p.id}><td>{p.email || "—"}</td><td><input className="inline-input" value={p.full_name || ""} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,full_name:e.target.value}:x))}/></td><td><input type="checkbox" checked={!!p.is_admin} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,is_admin:e.target.checked}:x))}/></td><td><button className="table-action" onClick={()=>{const x=profiles.find(y=>y.id===p.id); updateProfile(p.id,{full_name:x.full_name,is_admin:x.is_admin});}}>Save profile</button></td></tr>)}</tbody></table></div></ModulePanel>;
+
+  if (page === "Settings") return <><ModulePanel title="System configuration" subtitle="Admin-controlled settings that influence thresholds and application behavior."><div className="settings-grid">{["due_soon_days","running_hours_due_soon","default_quantity_unit","low_stock_alert_enabled","oil_analysis_alerts_enabled"].map(key=>{const s=settings.find(x=>x.setting_key===key); const value=settingDraft[key] ?? s?.setting_value ?? ""; return <div className="setting-card" key={key}><div><strong>{key.replaceAll("_"," ")}</strong><small>Application setting</small></div><input value={value} onChange={e=>setSettingDraft({...settingDraft,[key]:e.target.value})}/><button className="secondary-button" onClick={()=>saveSetting(key)}>Save</button></div>;})}</div></ModulePanel><ModulePanel title="Configuration notes" subtitle="Keep engineering thresholds configurable rather than hard-coded."><div className="module-empty"><p>Oil-analysis limits, running-hour due-soon windows, stock thresholds and alert behavior should be controlled here or in their respective master-data screens.</p></div></ModulePanel></>;
+
+  if (page === "Audit History") return <ModulePanel title="Audit history" subtitle="Important changes and import operations should remain traceable."><div className="module-empty"><strong>Audit trail foundation</strong><p>The audit table is ready for application actions. Existing modules can be extended to write old/new JSON snapshots for every material change.</p></div></ModulePanel>;
+
+  return null;
+}
