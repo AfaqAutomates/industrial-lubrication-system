@@ -34,7 +34,7 @@ const emptyEquipmentForm = {
   equipment_type: "", status: "active", lubrication_criticality: "medium", lubrication_notes: "",
 };
 const emptyRelationshipForm = {
-  parent_equipment_id: "", child_equipment_id: "", relationship_type: "runs_with",
+  parent_equipment_id: "", child_equipment_ids: [], relationship_type: "runs_with",
   running_hours_rule: "inherit", notes: "",
 };
 const emptyComponentForm = {
@@ -100,6 +100,8 @@ function Dashboard() {
   const [deactivatingId, setDeactivatingId] = useState(null);
 
   const [relationshipForm, setRelationshipForm] = useState(emptyRelationshipForm);
+  const [childPickerOpen, setChildPickerOpen] = useState(false);
+  const [childEquipmentSearch, setChildEquipmentSearch] = useState("");
   const [savingRelationship, setSavingRelationship] = useState(false);
   const [deactivatingRelationshipId, setDeactivatingRelationshipId] = useState(null);
 
@@ -230,21 +232,52 @@ function Dashboard() {
   function editEquipment(item) { setEditingId(item.id); setForm({ sap_equipment_no: item.sap_equipment_no || "", description: item.description || "", plant_id: item.plant_id || "", area_id: item.area_id || "", functional_location: item.functional_location || "", equipment_type: item.equipment_type || "", status: item.status || "active", lubrication_criticality: item.lubrication_criticality || "medium", lubrication_notes: item.lubrication_notes || "" }); clearMessages(); setShowForm(true); }
   async function deactivateEquipment(item) { if (!window.confirm(`Mark ${item.sap_equipment_no} as inactive?`)) return; setDeactivatingId(item.id); clearMessages(); try { const { error } = await supabase.from("equipment").update({ status: "inactive" }).eq("id", item.id); if (error) throw new Error(error.message); setNotice("Equipment marked inactive."); await loadData(); } catch (e) { setError(e.message); } finally { setDeactivatingId(null); } }
 
-  function updateRelationshipForm(e) { const { name, value } = e.target; setRelationshipForm((p) => ({ ...p, [name]: value })); }
+  function updateRelationshipForm(e) {
+    const { name, value } = e.target;
+    if (name === "parent_equipment_id") {
+      setRelationshipForm((current) => ({ ...current, parent_equipment_id: value, child_equipment_ids: current.child_equipment_ids.filter((id) => id !== value) }));
+      setChildPickerOpen(false);
+      return;
+    }
+    setRelationshipForm((current) => ({ ...current, [name]: value }));
+  }
+  function toggleChildEquipment(id) {
+    setRelationshipForm((current) => {
+      const selected = new Set(current.child_equipment_ids);
+      if (selected.has(id)) selected.delete(id); else selected.add(id);
+      return { ...current, child_equipment_ids: [...selected] };
+    });
+  }
+  function selectVisibleChildEquipment() {
+    const query = childEquipmentSearch.trim().toLowerCase();
+    const visibleIds = activeEquipment.filter((item) => item.id !== relationshipForm.parent_equipment_id
+      && (!query || [item.sap_equipment_no, item.description, item.functional_location].join(" ").toLowerCase().includes(query))).map((item) => item.id);
+    setRelationshipForm((current) => ({ ...current, child_equipment_ids: [...new Set([...current.child_equipment_ids, ...visibleIds])] }));
+  }
   async function saveRelationship(e) {
     e.preventDefault(); setSavingRelationship(true); clearMessages();
     try {
-      const { parent_equipment_id, child_equipment_id, relationship_type, running_hours_rule, notes } = relationshipForm;
-      if (!parent_equipment_id || !child_equipment_id) throw new Error("Please select both parent and child equipment.");
-      if (parent_equipment_id === child_equipment_id) throw new Error("Parent and child equipment must be different.");
+      const { parent_equipment_id, child_equipment_ids, relationship_type, running_hours_rule, notes } = relationshipForm;
+      if (!parent_equipment_id || !child_equipment_ids.length) throw new Error("Select a parent and at least one child equipment record.");
+      if (child_equipment_ids.includes(parent_equipment_id)) throw new Error("Parent equipment cannot also be selected as a child.");
       if (!["inherit", "independent", "custom"].includes(running_hours_rule)) throw new Error("Invalid running-hours rule. Select Inherit, Independent, or Custom.");
-      if (relationships.some((r) => r.is_active && r.parent_equipment_id === parent_equipment_id && r.child_equipment_id === child_equipment_id)) throw new Error("This active parent-child relationship already exists.");
-      const { error } = await supabase.from("equipment_relationships").insert({ parent_equipment_id, child_equipment_id, relationship_type, running_hours_rule, notes: notes.trim() || null, is_active: true });
+      const duplicates = child_equipment_ids.filter((childId) => relationships.some((item) => item.is_active && item.parent_equipment_id === parent_equipment_id && item.child_equipment_id === childId));
+      if (duplicates.length) {
+        const labels = duplicates.map((id) => equipment.find((item) => item.id === id)?.sap_equipment_no || "selected equipment");
+        throw new Error("An active relationship already exists for: " + labels.join(", ") + ". Remove those selections and save the remaining equipment.");
+      }
+      const rows = child_equipment_ids.map((child_equipment_id) => ({
+        parent_equipment_id, child_equipment_id, relationship_type, running_hours_rule,
+        notes: notes.trim() || null, is_active: true,
+      }));
+      const { error } = await supabase.from("equipment_relationships").insert(rows);
       if (error) throw new Error(error.message);
-      setRelationshipForm(emptyRelationshipForm); setNotice("Equipment relationship saved successfully."); await loadData();
-    } catch (e) { setError(e.message || "Unable to save the relationship."); } finally { setSavingRelationship(false); }
-  }
-  async function deactivateRelationship(item) { if (!window.confirm("Deactivate this equipment relationship? The record will be retained.")) return; setDeactivatingRelationshipId(item.id); clearMessages(); try { const { error } = await supabase.from("equipment_relationships").update({ is_active: false }).eq("id", item.id); if (error) throw new Error(error.message); setNotice("Equipment relationship deactivated."); await loadData(); } catch (e) { setError(e.message); } finally { setDeactivatingRelationshipId(null); } }
+      const savedCount = rows.length;
+      setRelationshipForm(emptyRelationshipForm); setChildPickerOpen(false); setChildEquipmentSearch("");
+      setNotice(savedCount + (savedCount === 1 ? " equipment relationship saved successfully." : " equipment relationships saved successfully."));
+      await loadData();
+    } catch (e) { setError(e.message || "Unable to save the relationships."); } finally { setSavingRelationship(false); }
+  }  async function deactivateRelationship(item) { if (!window.confirm("Deactivate this equipment relationship? The record will be retained.")) return; setDeactivatingRelationshipId(item.id); clearMessages(); try { const { error } = await supabase.from("equipment_relationships").update({ is_active: false }).eq("id", item.id); if (error) throw new Error(error.message); setNotice("Equipment relationship deactivated."); await loadData(); } catch (e) { setError(e.message); } finally { setDeactivatingRelationshipId(null); } }
 
   function updateComponentForm(e) { const { name, value } = e.target; setComponentForm((p) => ({ ...p, [name]: value })); }
   function startNewComponent() { setComponentForm(emptyComponentForm); setEditingComponentId(null); clearMessages(); setShowComponentForm(true); }
@@ -333,7 +366,7 @@ function Dashboard() {
 
           {activePage === "Equipment Relationships" && <>
             <div className="info-banner"><div className="banner-icon"><Icon name="link"/></div><div><strong>Running-hours inheritance</strong><p>Use relationships to tell the system which associated equipment follows the operating hours of a parent production asset.</p></div></div>
-            <FormCard title="Create equipment relationship" subtitle="Define how the two equipment records operate together."><form onSubmit={saveRelationship}><FormSection title="Relationship definition" hint="Parent → associated equipment"><div className="relationship-builder"><div className="relationship-node"><span className="node-label">PARENT</span><select name="parent_equipment_id" value={relationshipForm.parent_equipment_id} onChange={updateRelationshipForm} required><option value="">Select parent equipment</option>{activeEquipment.map((x) => <option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></div><div className="relationship-arrow"><Icon name="arrow" size={24}/><span>runs with</span></div><div className="relationship-node"><span className="node-label">CHILD / ASSOCIATED</span><select name="child_equipment_id" value={relationshipForm.child_equipment_id} onChange={updateRelationshipForm} required><option value="">Select associated equipment</option>{activeEquipment.map((x) => <option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></div></div><div className="form-grid relationship-options"><Field label="Relationship type"><select name="relationship_type" value={relationshipForm.relationship_type} onChange={updateRelationshipForm}><option value="runs_with">Runs with</option><option value="driven_by">Driven by</option><option value="depends_on">Depends on</option><option value="associated">Associated equipment</option></select></Field><Field label="Running-hours rule"><select name="running_hours_rule" value={relationshipForm.running_hours_rule} onChange={updateRelationshipForm}><option value="inherit">Inherit parent running hours</option><option value="independent">Track independently</option><option value="custom">Custom rule</option></select></Field><Field label="Notes" full><textarea name="notes" value={relationshipForm.notes} onChange={updateRelationshipForm} rows={3} placeholder="Describe how the equipment operates together..."/></Field></div></FormSection><FormActions onCancel={() => setRelationshipForm(emptyRelationshipForm)} saving={savingRelationship} saveText="Save relationship" cancelText="Reset"/></form></FormCard>
+            <FormCard title="Create equipment relationships" subtitle="Select one parent and one or more child equipment records."><form onSubmit={saveRelationship}><FormSection title="Relationship definition" hint="One parent can be linked to several associated equipment records"><div className="relationship-builder"><div className="relationship-node"><span className="node-label">PARENT</span><select name="parent_equipment_id" value={relationshipForm.parent_equipment_id} onChange={updateRelationshipForm} required><option value="">Select parent equipment</option>{activeEquipment.map((x) => <option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></div><div className="relationship-arrow"><Icon name="arrow" size={24}/><span>runs with</span></div><div className="relationship-node relationship-multi-select"><span className="node-label">CHILD / ASSOCIATED EQUIPMENT</span><button type="button" className="child-picker-trigger" disabled={!relationshipForm.parent_equipment_id} aria-expanded={childPickerOpen} onClick={() => setChildPickerOpen((open) => !open)}><span>{relationshipForm.child_equipment_ids.length ? relationshipForm.child_equipment_ids.length + " equipment selected" : relationshipForm.parent_equipment_id ? "Choose child equipment" : "Select a parent first"}</span><Icon name="chevron" size={16}/></button>{childPickerOpen && relationshipForm.parent_equipment_id && <div className="child-picker-menu"><div className="child-picker-tools"><input type="search" value={childEquipmentSearch} onChange={(event) => setChildEquipmentSearch(event.target.value)} placeholder="Search equipment..."/><button type="button" className="child-picker-text-button" onClick={selectVisibleChildEquipment}>Select visible</button><button type="button" className="child-picker-text-button" onClick={() => setRelationshipForm((current) => ({ ...current, child_equipment_ids: [] }))}>Clear</button></div><div className="child-picker-options">{activeEquipment.filter((x) => { const query = childEquipmentSearch.trim().toLowerCase(); return x.id !== relationshipForm.parent_equipment_id && (!query || [x.sap_equipment_no, x.description, x.functional_location].join(" ").toLowerCase().includes(query)); }).map((x) => <label className="child-picker-option" key={x.id}><input type="checkbox" checked={relationshipForm.child_equipment_ids.includes(x.id)} onChange={() => toggleChildEquipment(x.id)}/><span><strong>{x.sap_equipment_no}</strong><small>{x.description}</small></span></label>)}{activeEquipment.filter((x) => x.id !== relationshipForm.parent_equipment_id).length === 0 && <p className="child-picker-empty">No other active equipment available.</p>}</div><div className="child-picker-footer">Check as many children as needed. This list stays open while you select.</div></div>}{relationshipForm.child_equipment_ids.length > 0 && <div className="child-picker-selected">{relationshipForm.child_equipment_ids.map((id) => { const item = activeEquipment.find((x) => x.id === id); return item ? <span className="child-picker-chip" key={id}>{item.sap_equipment_no}<button type="button" aria-label={"Remove " + item.sap_equipment_no} onClick={() => toggleChildEquipment(id)}>×</button></span> : null; })}</div>}</div></div><div className="form-grid relationship-options"><Field label="Relationship type"><select name="relationship_type" value={relationshipForm.relationship_type} onChange={updateRelationshipForm}><option value="runs_with">Runs with</option><option value="driven_by">Driven by</option><option value="depends_on">Depends on</option><option value="associated">Associated equipment</option></select></Field><Field label="Running-hours rule"><select name="running_hours_rule" value={relationshipForm.running_hours_rule} onChange={updateRelationshipForm}><option value="inherit">Inherit parent running hours</option><option value="independent">Track independently</option><option value="custom">Custom rule</option></select></Field><Field label="Notes" full><textarea name="notes" value={relationshipForm.notes} onChange={updateRelationshipForm} rows={3} placeholder="Describe how the equipment operates together..."/></Field></div></FormSection><FormActions onCancel={() => { setRelationshipForm(emptyRelationshipForm); setChildPickerOpen(false); setChildEquipmentSearch(""); }} saving={savingRelationship} saveText="Save relationships" cancelText="Reset"/></form></FormCard>
             <DataPanel title="Equipment relationships" subtitle={`${relationships.filter((x) => x.is_active).length} active relationships`}><Table><thead><tr><Th>PARENT EQUIPMENT</Th><Th>CHILD EQUIPMENT</Th><Th>RELATIONSHIP</Th><Th>RUNNING-HOURS RULE</Th><Th>STATUS</Th><Th>ACTIONS</Th></tr></thead><tbody>{relationships.map((item) => <tr key={item.id}><td><strong>{getEquipmentLabel(item.parent_equipment_id)}</strong></td><td>{getEquipmentLabel(item.child_equipment_id)}</td><td><span className="soft-badge">{(item.relationship_type || "associated").replaceAll("_", " ")}</span></td><td><span className="runtime-rule"><span/> {item.running_hours_rule === "inherit" ? "Inherit parent hours" : item.running_hours_rule === "custom" ? "Custom rule" : "Track independently"}</span></td><td><Status value={item.is_active ? "active" : "inactive"}/></td><td>{item.is_active && <button className="table-action danger" onClick={() => deactivateRelationship(item)} disabled={deactivatingRelationshipId === item.id}><Icon name="trash" size={14}/>{deactivatingRelationshipId === item.id ? "Updating" : "Deactivate"}</button>}</td></tr>)}</tbody></Table></DataPanel>
           </>}
 
@@ -535,6 +568,7 @@ function Empty({ icon, title, text, action }) { return <div className="empty-sta
 function Placeholder({ page, go }) { return <section className="placeholder"><div className="placeholder-icon"><Icon name={page === "Alerts" ? "bell" : page === "Running Hours" ? "clock" : page === "Reports" ? "report" : "settings"} size={30}/></div><div className="card-kicker">MODULE</div><h2>{page}</h2><p>This workspace is reserved for the next implementation stage. The modern shell, navigation, data-entry pattern and database-backed master-data modules are ready for expansion here.</p>{page === "Running Hours" && <button className="secondary-button" onClick={() => go("Equipment Relationships")}>Review equipment relationships</button>}</section>; }
 
 export default Dashboard;
+
 
 
 
