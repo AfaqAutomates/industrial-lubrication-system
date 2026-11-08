@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "./lib/supabase";
+import OilReportIntake from "./OilReportIntake";
 
 const emptyActivity = {
   equipment_id: "", component_id: "", requirement_id: "", activity_type: "lubrication",
@@ -10,12 +11,18 @@ const emptyActivity = {
 };
 const emptyOil = {
   sample_id: "", equipment_id: "", component_id: "", sample_date: new Date().toISOString().slice(0, 10),
-  running_hours: "", oil_hours: "", lubricant_id: "", sample_point: "", laboratory: "",
-  laboratory_report_no: "", viscosity: "", water: "", tan: "", tbn: "", iron: "", copper: "",
-  chromium: "", aluminium: "", silicon: "", sodium: "", particle_count: "", iso_code: "",
-  pq_index: "", status: "normal", recommendation: "", reviewer: "", remarks: "",
-};
-const emptyInventory = { lubricant_id: "", store_location: "", unit: "L", minimum_stock: "", critical_stock: "", current_stock: "" };
+  running_hours: "", oil_hours: "", lubricant_id: "", sample_point: "", laboratory: "", laboratory_report_no: "",
+  customer_name: "", cell_number: "", land_line_number: "", batch_number: "", equipment_name: "", equipment_make: "",
+  equipment_model: "", equipment_serial_no: "", oil_top_up_volume: "", oil_sump_capacity: "", oil_condition: "",
+  reason_for_testing: "", initiated_by: "", initiated_date: "", tested_by: "", reviewed_by: "", approved_by: "", approval_date: "", approval_running_hours: "", receiving_date: "", receiving_time: "", reported_product_grade: "",
+  appearance: "", color: "", density_15c: "", crackle: "", blotter_spot_test: "", flash_point_coc: "",
+  flash_point_pmcc: "", flash_point_seta: "", fuel_dilution: "", viscosity: "", viscosity_100c: "",
+  viscosity_index: "", apparent_viscosity_minus15c: "", treat_rate: "", water_pct: "", karl_fischer_water: "", tan: "", tbn: "", iron: "", copper: "",
+  chromium: "", lead: "", silicon: "", sodium: "", aluminium: "", tin: "", zinc: "", calcium: "",
+  magnesium: "", oxidation: "", nitration: "", pentane_insolubles: "", copper_corrosion_100c: "",
+  foam_tendency_seq1: "", foam_tendency_seq2: "", foam_tendency_seq3: "", particle_count: "",
+  iso_code: "", pq_index: "", status: "normal", recommendation: "", reviewer: "", remarks: "",
+};const emptyInventory = { lubricant_id: "", store_location: "", unit: "L", minimum_stock: "", critical_stock: "", current_stock: "" };
 
 function fmtDate(value) {
   if (!value) return "—";
@@ -46,9 +53,11 @@ export default function RemainingModules({ page, equipment, components, lubrican
 
   const [activityForm, setActivityForm] = useState(emptyActivity);
   const [oilForm, setOilForm] = useState(emptyOil);
+  const [reportFile, setReportFile] = useState(null);
   const [inventoryForm, setInventoryForm] = useState(emptyInventory);
   const [showActivity, setShowActivity] = useState(false);
   const [showOil, setShowOil] = useState(false);
+  function updateOilField(name, value) { setOilForm((current) => ({ ...current, [name]: value })); }
   const [showInventory, setShowInventory] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activitySearch, setActivitySearch] = useState("");
@@ -158,13 +167,32 @@ export default function RemainingModules({ page, equipment, components, lubrican
   }
   async function saveOil(e) {
     e.preventDefault(); setSaving(true); setError("");
+    let attachmentPath = null;
     try {
       const payload = { ...oilForm, equipment_id: oilForm.equipment_id, component_id: oilForm.component_id || null, lubricant_id: oilForm.lubricant_id || null, running_hours: oilForm.running_hours === "" ? null : number(oilForm.running_hours), oil_hours: oilForm.oil_hours === "" ? null : number(oilForm.oil_hours) };
-      const { error } = await supabase.from("oil_analysis_samples").insert(payload); if (error) throw new Error(error.message);
-      setOilForm(emptyOil); setShowOil(false); setNotice("Oil-analysis sample saved."); await writeAudit("Oil Analysis", null, "create", payload); await loadModuleData();
+      if (reportFile) {
+        const safeName = reportFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        attachmentPath = "reports/" + crypto.randomUUID() + "-" + safeName;
+        const upload = await supabase.storage.from("oil-analysis-reports").upload(attachmentPath, reportFile, { contentType: reportFile.type, upsert: false });
+        if (upload.error) throw new Error("Report upload failed: " + upload.error.message);
+        payload.report_attachment_path = attachmentPath;
+        payload.report_attachment_name = reportFile.name;
+        payload.report_attachment_type = reportFile.type || "application/octet-stream";
+        payload.report_attachment_size = reportFile.size;
+      }
+      const { error } = await supabase.from("oil_analysis_samples").insert(payload);
+      if (error) {
+        if (attachmentPath) await supabase.storage.from("oil-analysis-reports").remove([attachmentPath]);
+        throw new Error(error.message);
+      }
+      setOilForm(emptyOil); setReportFile(null); setShowOil(false); setNotice("Oil-analysis sample and report saved."); await writeAudit("Oil Analysis", null, "create", payload); await loadModuleData();
     } catch (e2) { setError(e2.message); } finally { setSaving(false); }
   }
-  async function saveInventory(e) {
+  async function openOilAttachment(item) {
+    const { data, error } = await supabase.storage.from("oil-analysis-reports").createSignedUrl(item.report_attachment_path, 120);
+    if (error) { setError(error.message); return; }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }  async function saveInventory(e) {
     e.preventDefault(); setSaving(true); setError("");
     try {
       const payload = { ...inventoryForm, lubricant_id: inventoryForm.lubricant_id, minimum_stock: number(inventoryForm.minimum_stock), critical_stock: number(inventoryForm.critical_stock), current_stock: number(inventoryForm.current_stock), updated_at: new Date().toISOString() };
@@ -241,11 +269,90 @@ export default function RemainingModules({ page, equipment, components, lubrican
   </>;
 
   if (page === "Oil Analysis") return <>
-    {showOil && <ModuleForm title="Enter oil-analysis sample" subtitle="Structured results stay searchable and can be trended later." onClose={()=>setShowOil(false)} onSubmit={saveOil} saving={saving} saveText="Save sample"><div className="module-form-grid"><MField label="Sample ID"><input required value={oilForm.sample_id} onChange={e=>setOilForm({...oilForm,sample_id:e.target.value})}/></MField><MField label="Sample date"><input type="date" required value={oilForm.sample_date} onChange={e=>setOilForm({...oilForm,sample_date:e.target.value})}/></MField><MField label="Equipment"><select required value={oilForm.equipment_id} onChange={e=>setOilForm({...oilForm,equipment_id:e.target.value,component_id:""})}><option value="">Select equipment</option>{equipment.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></MField><MField label="Component"><select value={oilForm.component_id} onChange={e=>setOilForm({...oilForm,component_id:e.target.value})}><option value="">Not specified</option>{components.filter(x=>x.equipment_id===oilForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField><MField label="Running hours"><input type="number" value={oilForm.running_hours} onChange={e=>setOilForm({...oilForm,running_hours:e.target.value})}/></MField><MField label="Oil hours"><input type="number" value={oilForm.oil_hours} onChange={e=>setOilForm({...oilForm,oil_hours:e.target.value})}/></MField><MField label="Lubricant"><select value={oilForm.lubricant_id} onChange={e=>setOilForm({...oilForm,lubricant_id:e.target.value})}><option value="">Not specified</option>{lubricants.map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField><MField label="Sample point"><input value={oilForm.sample_point} onChange={e=>setOilForm({...oilForm,sample_point:e.target.value})}/></MField><MField label="Laboratory"><input value={oilForm.laboratory} onChange={e=>setOilForm({...oilForm,laboratory:e.target.value})}/></MField><MField label="Laboratory report #"><input value={oilForm.laboratory_report_no} onChange={e=>setOilForm({...oilForm,laboratory_report_no:e.target.value})}/></MField><MField label="Viscosity"><input value={oilForm.viscosity} onChange={e=>setOilForm({...oilForm,viscosity:e.target.value})}/></MField><MField label="Water"><input value={oilForm.water} onChange={e=>setOilForm({...oilForm,water:e.target.value})}/></MField><MField label="TAN"><input value={oilForm.tan} onChange={e=>setOilForm({...oilForm,tan:e.target.value})}/></MField><MField label="TBN"><input value={oilForm.tbn} onChange={e=>setOilForm({...oilForm,tbn:e.target.value})}/></MField><MField label="Iron"><input value={oilForm.iron} onChange={e=>setOilForm({...oilForm,iron:e.target.value})}/></MField><MField label="Copper"><input value={oilForm.copper} onChange={e=>setOilForm({...oilForm,copper:e.target.value})}/></MField><MField label="Chromium"><input value={oilForm.chromium} onChange={e=>setOilForm({...oilForm,chromium:e.target.value})}/></MField><MField label="Aluminium"><input value={oilForm.aluminium} onChange={e=>setOilForm({...oilForm,aluminium:e.target.value})}/></MField><MField label="Silicon"><input value={oilForm.silicon} onChange={e=>setOilForm({...oilForm,silicon:e.target.value})}/></MField><MField label="Particle count"><input value={oilForm.particle_count} onChange={e=>setOilForm({...oilForm,particle_count:e.target.value})}/></MField><MField label="ISO cleanliness code"><input value={oilForm.iso_code} onChange={e=>setOilForm({...oilForm,iso_code:e.target.value})}/></MField><MField label="PQ index"><input value={oilForm.pq_index} onChange={e=>setOilForm({...oilForm,pq_index:e.target.value})}/></MField><MField label="Status"><select value={oilForm.status} onChange={e=>setOilForm({...oilForm,status:e.target.value})}><option>normal</option><option>warning</option><option>alarm</option><option>critical</option></select></MField><MField label="Reviewer"><input value={oilForm.reviewer} onChange={e=>setOilForm({...oilForm,reviewer:e.target.value})}/></MField><MField label="Recommendation" full><textarea rows="3" value={oilForm.recommendation} onChange={e=>setOilForm({...oilForm,recommendation:e.target.value})}/></MField><MField label="Remarks" full><textarea rows="3" value={oilForm.remarks} onChange={e=>setOilForm({...oilForm,remarks:e.target.value})}/></MField></div></ModuleForm>}
-    <ModulePanel title="Oil analysis" subtitle={`${filteredOils.length} samples`} action={<div className="module-toolbar"><input placeholder="Search samples..." value={oilSearch} onChange={e=>setOilSearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowOil(true)}>+ Add sample</button></div>}><div className="oil-kpis"><div><b>{oils.length}</b><span>Samples</span></div><div><b>{oils.filter(x=>x.status==="normal").length}</b><span>Normal</span></div><div><b>{oils.filter(x=>x.status==="warning").length}</b><span>Warning</span></div><div><b>{oils.filter(x=>["alarm","critical"].includes(x.status)).length}</b><span>Alarm / Critical</span></div></div><div className="table-wrap"><table><thead><tr><th>SAMPLE</th><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>LAB</th><th>VISCOSITY</th><th>IRON</th><th>WATER</th><th>STATUS</th><th>RECOMMENDATION</th></tr></thead><tbody>{filteredOils.map(o=><tr key={o.id}><td><strong>{o.sample_id}</strong></td><td>{fmtDate(o.sample_date)}</td><td>{labelEquipment(equipment,o.equipment_id)}</td><td>{labelComponent(equipment,components,o.component_id)}</td><td>{o.laboratory || "—"}</td><td>{o.viscosity || "—"}</td><td>{o.iron || "—"}</td><td>{o.water || "—"}</td><td><Badge value={o.status}/></td><td>{o.recommendation || "—"}</td></tr>)}</tbody></table></div></ModulePanel>
-  </>;
+    {showOil && <ModuleForm title="Enter oil-analysis sample" subtitle="Upload a lab report to suggest values, review them, then save the report with the sample." onClose={()=>{setShowOil(false);setReportFile(null);setOilForm(emptyOil);}} onSubmit={saveOil} saving={saving} saveText="Save sample and report">
+      <div className="oil-analysis-form">
+        <section className="oil-analysis-section"><h3>Scan report</h3><OilReportIntake onFileSelected={setReportFile} onExtracted={(fields)=>{const next={...fields};if(fields.equipment_name){const q=fields.equipment_name.toLowerCase();const found=equipment.find(x=>String(x.sap_equipment_no||"").toLowerCase()===q||String(x.description||"").toLowerCase().includes(q));if(found)next.equipment_id=found.id;}if(fields.reported_product_grade){const q=fields.reported_product_grade.toLowerCase().replace(/[^a-z0-9]/g,"");const found=lubricants.find(x=>[x.grade,x.product_name,x.product_code].some(v=>String(v||"").toLowerCase().replace(/[^a-z0-9]/g,"").includes(q)));if(found)next.lubricant_id=found.id;}setOilForm(current=>({...current,...next}));}}/></section>
+        <section className="oil-analysis-section"><h3>Sample and equipment details</h3><div className="module-form-grid">
+          <MField label="Sample ID"><input required value={oilForm.sample_id} onChange={e=>updateOilField("sample_id",e.target.value)}/></MField>
+          <MField label="Sample date"><input type="date" required value={oilForm.sample_date} onChange={e=>updateOilField("sample_date",e.target.value)}/></MField>
+          <MField label="Equipment"><select required value={oilForm.equipment_id} onChange={e=>setOilForm({...oilForm,equipment_id:e.target.value,component_id:""})}><option value="">Select equipment</option>{equipment.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></MField>
+          <MField label="Equipment / machine name on report"><input value={oilForm.equipment_name} onChange={e=>updateOilField("equipment_name",e.target.value)}/></MField>
+          <MField label="Component"><select value={oilForm.component_id} onChange={e=>updateOilField("component_id",e.target.value)}><option value="">Not specified</option>{components.filter(x=>x.equipment_id===oilForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField>
+          <MField label="Equipment running hours"><input type="number" value={oilForm.running_hours} onChange={e=>updateOilField("running_hours",e.target.value)}/></MField>
+          <MField label="Oil running hours"><input type="number" value={oilForm.oil_hours} onChange={e=>updateOilField("oil_hours",e.target.value)}/></MField>
+          <MField label="Lubricant in app"><select value={oilForm.lubricant_id} onChange={e=>updateOilField("lubricant_id",e.target.value)}><option value="">Not specified</option>{lubricants.map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField>
+          <MField label="Product name / grade on report"><input value={oilForm.reported_product_grade} onChange={e=>updateOilField("reported_product_grade",e.target.value)}/></MField>
+          <MField label="Make"><input value={oilForm.equipment_make} onChange={e=>updateOilField("equipment_make",e.target.value)}/></MField>
+          <MField label="Model"><input value={oilForm.equipment_model} onChange={e=>updateOilField("equipment_model",e.target.value)}/></MField>
+          <MField label="Serial number"><input value={oilForm.equipment_serial_no} onChange={e=>updateOilField("equipment_serial_no",e.target.value)}/></MField>
+          <MField label="Sample point"><input value={oilForm.sample_point} onChange={e=>updateOilField("sample_point",e.target.value)}/></MField>
+          <MField label="Customer"><input value={oilForm.customer_name} onChange={e=>updateOilField("customer_name",e.target.value)}/></MField>
+          <MField label="Cell number"><input value={oilForm.cell_number} onChange={e=>updateOilField("cell_number",e.target.value)}/></MField>
+          <MField label="Land line number"><input value={oilForm.land_line_number} onChange={e=>updateOilField("land_line_number",e.target.value)}/></MField>
+          <MField label="Batch number"><input value={oilForm.batch_number} onChange={e=>updateOilField("batch_number",e.target.value)}/></MField>
+          <MField label="Oil top-up volume"><input value={oilForm.oil_top_up_volume} onChange={e=>updateOilField("oil_top_up_volume",e.target.value)}/></MField>
+          <MField label="Oil sump capacity"><input value={oilForm.oil_sump_capacity} onChange={e=>updateOilField("oil_sump_capacity",e.target.value)}/></MField>
+          <MField label="Oil condition"><select value={oilForm.oil_condition} onChange={e=>updateOilField("oil_condition",e.target.value)}><option value="">Unknown</option><option>Used oil</option><option>Fresh oil</option></select></MField>
+          <MField label="Laboratory"><input value={oilForm.laboratory} onChange={e=>updateOilField("laboratory",e.target.value)}/></MField>
+          <MField label="Laboratory report / sample number"><input value={oilForm.laboratory_report_no} onChange={e=>updateOilField("laboratory_report_no",e.target.value)}/></MField>
+          <MField label="Reason for testing"><input value={oilForm.reason_for_testing} onChange={e=>updateOilField("reason_for_testing",e.target.value)}/></MField>
+          <MField label="Initiated by"><input value={oilForm.initiated_by} onChange={e=>updateOilField("initiated_by",e.target.value)}/></MField><MField label="Initiated date"><input type="date" value={oilForm.initiated_date} onChange={e=>updateOilField("initiated_date",e.target.value)}/></MField><MField label="Tested by"><input value={oilForm.tested_by} onChange={e=>updateOilField("tested_by",e.target.value)}/></MField><MField label="Reviewed by"><input value={oilForm.reviewed_by} onChange={e=>updateOilField("reviewed_by",e.target.value)}/></MField><MField label="Approved by"><input value={oilForm.approved_by} onChange={e=>updateOilField("approved_by",e.target.value)}/></MField><MField label="Approval date"><input type="date" value={oilForm.approval_date} onChange={e=>updateOilField("approval_date",e.target.value)}/></MField><MField label="Approval running hours"><input value={oilForm.approval_running_hours} onChange={e=>updateOilField("approval_running_hours",e.target.value)}/></MField>
+          <MField label="Receiving date"><input type="date" value={oilForm.receiving_date} onChange={e=>updateOilField("receiving_date",e.target.value)}/></MField>
+          <MField label="Receiving time"><input value={oilForm.receiving_time} onChange={e=>updateOilField("receiving_time",e.target.value)}/></MField>
+        </div></section>
 
-  if (page === "Inventory") return <>
+        <section className="oil-analysis-section"><h3>Laboratory results</h3><p>Values retain their report units and qualifiers (for example, &lt;1.00). Confirm OCR suggestions against the scan.</p><div className="module-form-grid">
+          <MField label="Appearance"><input value={oilForm.appearance} onChange={e=>updateOilField("appearance",e.target.value)}/></MField>
+          <MField label="Color"><input value={oilForm.color} onChange={e=>updateOilField("color",e.target.value)}/></MField>
+          <MField label="Density at 15°C (kg/L)"><input value={oilForm.density_15c} onChange={e=>updateOilField("density_15c",e.target.value)}/></MField>
+          <MField label="Crackle test"><input value={oilForm.crackle} onChange={e=>updateOilField("crackle",e.target.value)}/></MField>
+          <MField label="Blotter spot test"><input value={oilForm.blotter_spot_test} onChange={e=>updateOilField("blotter_spot_test",e.target.value)}/></MField>
+          <MField label="Acid number / TAN (mg KOH/g)"><input value={oilForm.tan} onChange={e=>updateOilField("tan",e.target.value)}/></MField>
+          <MField label="Base number / TBN (mg KOH/g)"><input value={oilForm.tbn} onChange={e=>updateOilField("tbn",e.target.value)}/></MField>
+          <MField label="Viscosity at 40°C (mm²/s)"><input value={oilForm.viscosity} onChange={e=>updateOilField("viscosity",e.target.value)}/></MField>
+          <MField label="Viscosity at 100°C (mm²/s)"><input value={oilForm.viscosity_100c} onChange={e=>updateOilField("viscosity_100c",e.target.value)}/></MField>
+          <MField label="Viscosity index"><input value={oilForm.viscosity_index} onChange={e=>updateOilField("viscosity_index",e.target.value)}/></MField><MField label="Apparent viscosity at -15°C"><input value={oilForm.apparent_viscosity_minus15c} onChange={e=>updateOilField("apparent_viscosity_minus15c",e.target.value)}/></MField><MField label="Treat rate"><input value={oilForm.treat_rate} onChange={e=>updateOilField("treat_rate",e.target.value)}/></MField>
+          <MField label="Water (% vol)"><input value={oilForm.water_pct} onChange={e=>updateOilField("water_pct",e.target.value)}/></MField>
+          <MField label="Karl Fischer water (mg/kg)"><input value={oilForm.karl_fischer_water} onChange={e=>updateOilField("karl_fischer_water",e.target.value)}/></MField>
+          <MField label="Fuel dilution (vol %)"><input value={oilForm.fuel_dilution} onChange={e=>updateOilField("fuel_dilution",e.target.value)}/></MField>
+          <MField label="Flash point COC (°C)"><input value={oilForm.flash_point_coc} onChange={e=>updateOilField("flash_point_coc",e.target.value)}/></MField>
+          <MField label="Flash point PMCC (°C)"><input value={oilForm.flash_point_pmcc} onChange={e=>updateOilField("flash_point_pmcc",e.target.value)}/></MField>
+          <MField label="Flash point Setaflash (°C)"><input value={oilForm.flash_point_seta} onChange={e=>updateOilField("flash_point_seta",e.target.value)}/></MField>
+          <MField label="Oxidation / ageing"><input value={oilForm.oxidation} onChange={e=>updateOilField("oxidation",e.target.value)}/></MField>
+          <MField label="Nitration"><input value={oilForm.nitration} onChange={e=>updateOilField("nitration",e.target.value)}/></MField>
+          <MField label="Iron (mg/kg)"><input value={oilForm.iron} onChange={e=>updateOilField("iron",e.target.value)}/></MField>
+          <MField label="Copper (mg/kg)"><input value={oilForm.copper} onChange={e=>updateOilField("copper",e.target.value)}/></MField>
+          <MField label="Chromium (mg/kg)"><input value={oilForm.chromium} onChange={e=>updateOilField("chromium",e.target.value)}/></MField>
+          <MField label="Lead (mg/kg)"><input value={oilForm.lead} onChange={e=>updateOilField("lead",e.target.value)}/></MField>
+          <MField label="Silicon (mg/kg)"><input value={oilForm.silicon} onChange={e=>updateOilField("silicon",e.target.value)}/></MField>
+          <MField label="Sodium (mg/kg)"><input value={oilForm.sodium} onChange={e=>updateOilField("sodium",e.target.value)}/></MField>
+          <MField label="Aluminium (mg/kg)"><input value={oilForm.aluminium} onChange={e=>updateOilField("aluminium",e.target.value)}/></MField>
+          <MField label="Tin (mg/kg)"><input value={oilForm.tin} onChange={e=>updateOilField("tin",e.target.value)}/></MField>
+          <MField label="Zinc (mg/kg)"><input value={oilForm.zinc} onChange={e=>updateOilField("zinc",e.target.value)}/></MField>
+          <MField label="Calcium (mg/kg)"><input value={oilForm.calcium} onChange={e=>updateOilField("calcium",e.target.value)}/></MField>
+          <MField label="Magnesium (mg/kg)"><input value={oilForm.magnesium} onChange={e=>updateOilField("magnesium",e.target.value)}/></MField>
+          <MField label="Pentane insolubles (% mass)"><input value={oilForm.pentane_insolubles} onChange={e=>updateOilField("pentane_insolubles",e.target.value)}/></MField>
+          <MField label="Copper corrosion (100°C, 3 h)"><input value={oilForm.copper_corrosion_100c} onChange={e=>updateOilField("copper_corrosion_100c",e.target.value)}/></MField>
+          <MField label="Foam tendency, sequence I"><input value={oilForm.foam_tendency_seq1} onChange={e=>updateOilField("foam_tendency_seq1",e.target.value)}/></MField>
+          <MField label="Foam tendency, sequence II"><input value={oilForm.foam_tendency_seq2} onChange={e=>updateOilField("foam_tendency_seq2",e.target.value)}/></MField>
+          <MField label="Foam tendency, sequence III"><input value={oilForm.foam_tendency_seq3} onChange={e=>updateOilField("foam_tendency_seq3",e.target.value)}/></MField>
+          <MField label="Particle count"><input value={oilForm.particle_count} onChange={e=>updateOilField("particle_count",e.target.value)}/></MField>
+          <MField label="ISO cleanliness code"><input value={oilForm.iso_code} onChange={e=>updateOilField("iso_code",e.target.value)}/></MField>
+          <MField label="PQ index"><input value={oilForm.pq_index} onChange={e=>updateOilField("pq_index",e.target.value)}/></MField>
+          <MField label="Status"><select value={oilForm.status} onChange={e=>updateOilField("status",e.target.value)}><option>normal</option><option>warning</option><option>alarm</option><option>critical</option></select></MField>
+          <MField label="Recommendation"><input value={oilForm.recommendation} onChange={e=>updateOilField("recommendation",e.target.value)}/></MField>
+          <MField label="Reviewer"><input value={oilForm.reviewer} onChange={e=>updateOilField("reviewer",e.target.value)}/></MField>
+          <MField label="Remarks" full><textarea rows="3" value={oilForm.remarks} onChange={e=>updateOilField("remarks",e.target.value)}/></MField>
+        </div></section>
+      </div>
+    </ModuleForm>}
+    <ModulePanel title="Oil analysis" subtitle={filteredOils.length + " samples"} action={<div className="module-toolbar"><input placeholder="Search samples..." value={oilSearch} onChange={e=>setOilSearch(e.target.value)}/><button className="primary-button" onClick={()=>{setOilForm(emptyOil);setReportFile(null);setShowOil(true);}}>+ Add sample</button></div>}>
+      <div className="oil-kpis"><div><b>{oils.length}</b><span>Samples</span></div><div><b>{oils.filter(x=>x.status==="normal").length}</b><span>Normal</span></div><div><b>{oils.filter(x=>x.status==="warning").length}</b><span>Warning</span></div><div><b>{oils.filter(x=>["alarm","critical"].includes(x.status)).length}</b><span>Alarm / Critical</span></div></div>
+      <div className="table-wrap"><table><thead><tr><th>SAMPLE</th><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>LAB</th><th>VISCOSITY 40°C</th><th>VISCOSITY 100°C</th><th>IRON</th><th>WATER</th><th>STATUS</th><th>REPORT</th></tr></thead><tbody>
+        {filteredOils.map(o=><tr key={o.id}><td><strong>{o.sample_id}</strong></td><td>{fmtDate(o.sample_date)}</td><td>{labelEquipment(equipment,o.equipment_id)}</td><td>{labelComponent(equipment,components,o.component_id)}</td><td>{o.laboratory || "—"}</td><td>{o.viscosity || "—"}</td><td>{o.viscosity_100c || "—"}</td><td>{o.iron || "—"}</td><td>{o.water_pct || o.karl_fischer_water || o.water || "—"}</td><td><Badge value={o.status}/></td><td>{o.report_attachment_path ? <button className="table-action" onClick={()=>openOilAttachment(o)}>{o.report_attachment_name || "Open scan"}</button> : "—"}</td></tr>)}
+      </tbody></table></div>
+    </ModulePanel>
+  </>;  if (page === "Inventory") return <>
     {showInventory && <ModuleForm title="Set lubricant stock" subtitle="Maintain the current stock snapshot and thresholds for a store location." onClose={()=>setShowInventory(false)} onSubmit={saveInventory} saving={saving} saveText="Save stock"><div className="module-form-grid"><MField label="Lubricant"><select required value={inventoryForm.lubricant_id} onChange={e=>setInventoryForm({...inventoryForm,lubricant_id:e.target.value})}><option value="">Select lubricant</option>{lubricants.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField><MField label="Store location"><input value={inventoryForm.store_location} onChange={e=>setInventoryForm({...inventoryForm,store_location:e.target.value})} placeholder="e.g. Central Lubricant Store"/></MField><MField label="Unit"><input value={inventoryForm.unit} onChange={e=>setInventoryForm({...inventoryForm,unit:e.target.value})}/></MField><MField label="Current stock"><input type="number" step="any" value={inventoryForm.current_stock} onChange={e=>setInventoryForm({...inventoryForm,current_stock:e.target.value})}/></MField><MField label="Minimum stock"><input type="number" step="any" value={inventoryForm.minimum_stock} onChange={e=>setInventoryForm({...inventoryForm,minimum_stock:e.target.value})}/></MField><MField label="Critical stock"><input type="number" step="any" value={inventoryForm.critical_stock} onChange={e=>setInventoryForm({...inventoryForm,critical_stock:e.target.value})}/></MField></div></ModuleForm>}
     <ModulePanel title="Lubricant inventory" subtitle="Current stock, minimum stock and material risk visibility" action={<div className="module-toolbar"><input placeholder="Search inventory..." value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowInventory(true)}>+ Set stock</button></div>}><div className="inventory-kpis"><div><b>{inventory.length}</b><span>Stock items</span></div><div><b>{inventory.filter(x=>number(x.current_stock)<=number(x.minimum_stock)).length}</b><span>Low stock</span></div><div><b>{inventory.filter(x=>number(x.current_stock)<=number(x.critical_stock)).length}</b><span>Critical stock</span></div><div><b>{procurement.filter(x=>!["Closed","Cancelled","Fully Received"].includes(x.status)).length}</b><span>Open procurement</span></div></div><div className="table-wrap"><table><thead><tr><th>LUBRICANT</th><th>STORE</th><th>CURRENT</th><th>MINIMUM</th><th>CRITICAL</th><th>OPEN PROCUREMENT</th><th>STATUS</th></tr></thead><tbody>{filteredInventory.map(i=>{const p=procurement.filter(x=>x.item_code===lubricants.find(l=>l.id===i.lubricant_id)?.product_code && !["Closed","Cancelled","Fully Received"].includes(x.status)).reduce((s,x)=>s+number(x.quantity),0); const status=number(i.current_stock)<=number(i.critical_stock)?"critical":number(i.current_stock)<=number(i.minimum_stock)?"low":"healthy"; return <tr key={i.id}><td><strong>{labelLubricant(lubricants,i.lubricant_id)}</strong></td><td>{i.store_location || "—"}</td><td>{i.current_stock} {i.unit}</td><td>{i.minimum_stock} {i.unit}</td><td>{i.critical_stock} {i.unit}</td><td>{p ? `${p} ${i.unit}` : "—"}</td><td><Badge value={status} tone={status}/></td></tr>})}</tbody></table></div></ModulePanel>
   </>;
@@ -269,3 +376,5 @@ export default function RemainingModules({ page, equipment, components, lubrican
 
   return null;
 }
+
+

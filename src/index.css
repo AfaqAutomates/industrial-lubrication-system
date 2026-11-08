@@ -37,3 +37,16 @@
 @media(max-width:1100px){.dashboard-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:900px){.dashboard-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-grid-wide{grid-template-columns:1fr}}
 @media(max-width:520px){.dashboard-kpi-grid{grid-template-columns:1fr}.dashboard-list-row{align-items:flex-start}.dashboard-pill{white-space:nowrap}}
+
+
+/* Oil report intake and scanned attachment */
+.oil-analysis-form{padding-bottom:12px}
+.oil-analysis-section{border-bottom:1px solid #edf1f5;padding:18px 0 5px}
+.oil-analysis-section h3{margin:0 20px 5px;color:#354960;font:700 13px Manrope,Arial,sans-serif}
+.oil-analysis-section>p{margin:0 20px 8px;color:#8290a2;font-size:10px;line-height:1.5}
+.oil-analysis-section .module-form-grid{padding-top:12px}
+.oil-report-intake{margin:10px 20px 18px;padding:16px;border:1px dashed #b9cbe3;border-radius:10px;background:#f7faff}
+.oil-report-upload{position:relative;display:flex;align-items:center;justify-content:center;min-height:44px;padding:10px 14px;border:1px solid #d8e3f1;border-radius:8px;background:#fff;color:#315c96;font-size:11px;font-weight:700;cursor:pointer;overflow:hidden}
+.oil-report-upload input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.oil-report-status{margin:9px 0 0;color:#75859a;font-size:10px;line-height:1.6}
+@media(max-width:800px){.oil-analysis-section h3{margin-left:15px;margin-right:15px}.oil-analysis-section>p{margin-left:15px;margin-right:15px}.oil-report-intake{margin-left:15px;margin-right:15px}}
