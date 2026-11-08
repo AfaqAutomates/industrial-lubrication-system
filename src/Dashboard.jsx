@@ -309,7 +309,7 @@ function Dashboard() {
           {error && <div className="alert alert-error"><Icon name="info"/><div><strong>Action needs attention</strong><span>{error}</span></div><button onClick={() => setError("")}><Icon name="close" size={16}/></button></div>}
           {notice && <div className="alert alert-success"><div className="success-mark">✓</div><div><strong>Saved successfully</strong><span>{notice}</span></div><button onClick={() => setNotice("")}><Icon name="close" size={16}/></button></div>}
 
-          {activePage === "Dashboard" && <DashboardHome equipment={equipment} totalEquipmentCount={totalEquipmentCount} activeEquipmentCount={activeEquipmentCount} components={components} lubricants={lubricants} loading={loading} go={go} openEquipmentForm={openEquipmentForm} />}
+          {activePage === "Dashboard" && <DashboardHome equipment={equipment} totalEquipmentCount={totalEquipmentCount} activeEquipmentCount={activeEquipmentCount} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} loading={loading} go={go} openEquipmentForm={openEquipmentForm} />}
 
           {activePage === "Equipment" && <>
             {showForm && <FormCard title={editingId ? "Edit equipment" : "Add equipment"} subtitle="Maintain the SAP equipment record and lubrication classification." onClose={() => { setShowForm(false); setEditingId(null); setForm(emptyEquipmentForm); }}>
@@ -366,22 +366,155 @@ function Dashboard() {
   );
 }
 
-function DashboardHome({ equipment, totalEquipmentCount, activeEquipmentCount, components, lubricants, loading, go, openEquipmentForm }) {
-  const high = equipment.filter((x) => x.lubrication_criticality === "high").length;
+function DashboardHome({ equipment, totalEquipmentCount, activeEquipmentCount, components, lubricants, requirements, relationships, loading, go, openEquipmentForm }) {
+  const [activities, setActivities] = useState([]);
+  const [oils, setOils] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [runningRows, setRunningRows] = useState([]);
+  const [metricsLoading, setMetricsLoading] = useState(true);
+  const [metricsError, setMetricsError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadMetrics() {
+      const results = await Promise.all([
+        supabase.from("lubrication_activities").select("*").order("activity_date", { ascending: false }).limit(1000),
+        supabase.from("oil_analysis_samples").select("*").order("sample_date", { ascending: false }).limit(500),
+        supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }),
+        supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000),
+      ]);
+      if (cancelled) return;
+      setActivities(results[0].data || []);
+      setOils(results[1].data || []);
+      setInventory(results[2].data || []);
+      setRunningRows(results[3].data || []);
+      setMetricsError(results.some((result) => result.error) ? "Some indicators could not load. Check access to activity, oil analysis, inventory, and running-hours records." : "");
+      setMetricsLoading(false);
+    }
+    loadMetrics();
+    return () => { cancelled = true; };
+  }, []);
+
+  const hoursByEquipment = useMemo(() => {
+    const n = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+    const resolved = {};
+    runningRows.forEach((row) => { resolved[row.equipment_id] = (resolved[row.equipment_id] || 0) + n(row.running_hours); });
+    const visiting = new Set();
+    function resolve(id) {
+      if (resolved[id] != null) return resolved[id];
+      if (visiting.has(id)) return null;
+      visiting.add(id);
+      const parents = relationships.filter((r) => r.is_active && r.child_equipment_id === id && r.running_hours_rule === "inherit").map((r) => resolve(r.parent_equipment_id)).filter((v) => v != null);
+      visiting.delete(id);
+      if (parents.length) resolved[id] = Math.max(...parents);
+      return resolved[id] ?? null;
+    }
+    equipment.forEach((item) => resolve(item.id));
+    return resolved;
+  }, [runningRows, relationships, equipment]);
+
+  const scheduleRows = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const n = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+    return requirements.filter((r) => r.is_active && r.approval_status === "approved").map((r) => {
+      const component = components.find((c) => c.id === r.component_id);
+      const asset = equipment.find((e) => e.id === component?.equipment_id);
+      if (!component || !asset) return null;
+      const last = activities.filter((a) => a.requirement_id === r.id && a.status === "completed").sort((a, b) => new Date(b.activity_date) - new Date(a.activity_date))[0];
+      const currentHours = hoursByEquipment[asset.id] ?? null;
+      const dueDate = last?.activity_date && r.interval_days
+        ? new Date(new Date(String(last.activity_date).slice(0, 10) + "T00:00:00").getTime() + r.interval_days * 86400000)
+        : r.effective_from ? new Date(String(r.effective_from).slice(0, 10) + "T00:00:00") : today;
+      const dueHours = last?.running_hours != null && r.interval_hours ? n(last.running_hours) + n(r.interval_hours) : r.interval_hours ? currentHours : null;
+      const hasCalendarDue = Boolean(r.interval_days || r.effective_from);
+      const daysLeft = Math.ceil((dueDate - today) / 86400000);
+      const hoursLeft = dueHours != null && currentHours != null ? dueHours - currentHours : null;
+      let status = "scheduled";
+      let trigger = "Calendar";
+      if (r.frequency_basis === "running_hours") {
+        trigger = "Running hours";
+        status = hoursLeft != null && hoursLeft <= 0 ? "overdue" : hoursLeft != null && hoursLeft <= 50 ? "due-soon" : "scheduled";
+      } else if (r.frequency_basis === "calendar") {
+        status = daysLeft <= 0 ? "overdue" : daysLeft <= 7 ? "due-soon" : "scheduled";
+      } else {
+        const hourDue = hoursLeft != null && hoursLeft <= 0;
+        const dateDue = daysLeft <= 0;
+        status = hourDue || dateDue ? "overdue" : (hoursLeft != null && hoursLeft <= 50) || daysLeft <= 7 ? "due-soon" : "scheduled";
+        trigger = hourDue && dateDue ? "Both" : hourDue ? "Running hours" : "Calendar";
+      }
+      const wording = [r.method, r.instructions, r.source_reference, component.component_name].filter(Boolean).join(" ").toLowerCase();
+      const replacement = ["replace", "replacement", "oil change", "change oil", "renewal"].some((word) => wording.includes(word));
+      return { ...r, component, equipment: asset, dueDate, dueHours, daysLeft, hoursLeft, status, trigger, replacement, hasCalendarDue };
+    }).filter(Boolean).sort((a, b) => ({ overdue: 0, "due-soon": 1, scheduled: 2 }[a.status] - ({ overdue: 0, "due-soon": 1, scheduled: 2 }[b.status])));
+  }, [requirements, components, equipment, activities, hoursByEquipment]);
+
+  const overdue = scheduleRows.filter((r) => r.status === "overdue");
+  const dueSoon = scheduleRows.filter((r) => r.status === "due-soon");
+  const replacements = scheduleRows.filter((r) => r.replacement && r.status !== "overdue" && ((r.hasCalendarDue && r.daysLeft >= 0 && r.daysLeft <= 30) || (r.hoursLeft != null && r.hoursLeft >= 0 && r.hoursLeft <= 200)));
+  const oilAlerts = oils.filter((o) => ["warning", "alarm", "critical"].includes(String(o.status || "").toLowerCase()));
+  const stockAlerts = inventory.filter((i) => i.minimum_stock != null && Number(i.current_stock || 0) <= Number(i.minimum_stock));
+  const recent = activities.filter((a) => a.status === "completed").slice(0, 6);
+  const high = equipment.filter((e) => e.lubrication_criticality === "high").length;
+  const busy = loading || metricsLoading;
+  const dateLabel = (value) => {
+    if (!value) return "—";
+    const d = new Date(String(value).slice(0, 10) + "T00:00:00");
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  };
+  const equipmentLabel = (id) => { const e = equipment.find((x) => x.id === id); return e ? e.sap_equipment_no + " — " + e.description : "Equipment not found"; };
+  const lubricantLabel = (id) => { const l = lubricants.find((x) => x.id === id); return l ? [l.product_code, l.product_name, l.grade].filter(Boolean).join(" — ") : "—"; };
+  const dueLabel = (r) => r.hasCalendarDue ? dateLabel(r.dueDate) : r.dueHours != null ? Math.round(r.dueHours).toLocaleString() + " h" : "Due date not set";
+
   return <>
-    <div className="kpi-grid">
-      <Kpi icon="equipment" label="Total equipment" value={totalEquipmentCount} detail="Registered equipment records" tone="blue"/>
-      <Kpi icon="activity" label="Active equipment" value={activeEquipmentCount} detail="Available for lubrication planning" tone="green"/>
-      <Kpi icon="component" label="Components" value={components.length} detail="Equipment components registered" tone="violet"/>
-      <Kpi icon="oil" label="Lubricants" value={lubricants.length} detail="Products in lubricant master" tone="amber"/>
+    <div className="kpi-grid dashboard-kpi-grid">
+      <Kpi icon="schedule" label="Overdue work" value={busy ? "…" : overdue.length} detail="Approved requirements past due" tone="amber"/>
+      <Kpi icon="activity" label="Due soon" value={busy ? "…" : dueSoon.length} detail="Within 7 days or 50 running hours" tone="blue"/>
+      <Kpi icon="oil" label="Replacement planning" value={busy ? "…" : replacements.length} detail="Within 30 days or 200 running hours" tone="violet"/>
+      <Kpi icon="flask" label="Oil analysis alerts" value={busy ? "…" : oilAlerts.length} detail="Warning, alarm, or critical samples" tone="amber"/>
+      <Kpi icon="box" label="Low stock items" value={busy ? "…" : stockAlerts.length} detail="At or below minimum stock" tone="green"/>
     </div>
-    <div className="dashboard-grid">
-      <section className="panel"><PanelHeader title="Equipment overview" subtitle="Recently registered equipment" action={<button className="link-button" onClick={() => go("Equipment")}>View register <Icon name="arrow" size={15}/></button>}/>{loading ? <Loading/> : equipment.length === 0 ? <Empty icon="equipment" title="No equipment registered yet" text="Add your first equipment record to start the lubrication master setup." action={<button className="primary-button" onClick={openEquipmentForm}><Icon name="plus" size={16}/> Add equipment</button>}/> : <Table compact><thead><tr><Th>SAP EQUIPMENT #</Th><Th>DESCRIPTION</Th><Th>PLANT / AREA</Th><Th>CRITICALITY</Th><Th>STATUS</Th></tr></thead><tbody>{equipment.slice(0, 6).map((x) => <tr key={x.id}><td><strong className="primary-cell">{x.sap_equipment_no}</strong></td><td>{x.description}</td><td>Plant / Area</td><td><Criticality value={x.lubrication_criticality}/></td><td><Status value={x.status}/></td></tr>)}</tbody></Table>}</section>
-      <section className="panel"><PanelHeader title="Setup progress" subtitle="Foundation records for the lubrication system"/><div className="progress-list"><ProgressRow label="Equipment register" value={equipment.length} hint="SAP equipment records"/><ProgressRow label="Components" value={components.length} hint="Linked machine components"/><ProgressRow label="Lubricant master" value={lubricants.length} hint="Approved product records"/><ProgressRow label="High-criticality equipment" value={high} hint="Priority assets" alert/></div><div className="setup-note"><div><strong>Next recommended step</strong><span>Build component-level lubrication requirements after the equipment register is complete.</span></div><button className="secondary-button" onClick={() => go("Lubrication Requirements")}>Open requirements</button></div></section>
+    {metricsError && <div className="dashboard-data-note">{metricsError}</div>}
+    <div className="dashboard-grid dashboard-grid-wide">
+      <section className="panel">
+        <PanelHeader title="Overdue and upcoming lubrication" subtitle="Approved work, sorted by due status" action={<button className="link-button" onClick={() => go("Work Schedule")}>Open work schedule <Icon name="arrow" size={15}/></button>}/>
+        {busy ? <Loading/> : scheduleRows.filter((r) => r.status !== "scheduled").length === 0
+          ? <DashboardEmpty title="No overdue or near-term work" text="Work within 7 days or 50 running hours will appear here."/>
+          : <Table compact><thead><tr><Th>EQUIPMENT / COMPONENT</Th><Th>REQUIREMENT</Th><Th>DUE</Th><Th>TRIGGER</Th><Th>STATUS</Th></tr></thead><tbody>{scheduleRows.filter((r) => r.status !== "scheduled").slice(0, 8).map((r) => <tr key={r.id}><td><strong className="primary-cell">{r.equipment.sap_equipment_no}</strong><small className="cell-sub">{r.component.component_name}</small></td><td>{r.method || "Lubrication"}</td><td>{dueLabel(r)}</td><td>{r.trigger}</td><td><span className={"dashboard-pill " + r.status}>{r.status === "due-soon" ? "Due soon" : "Overdue"}</span></td></tr>)}</tbody></Table>}
+      </section>
+      <section className="panel">
+        <PanelHeader title="Early replacement dues" subtitle="Replacement tasks due within 30 days or 200 running hours" action={<button className="link-button" onClick={() => go("Work Schedule")}>View schedule <Icon name="arrow" size={15}/></button>}/>
+        {busy ? <Loading/> : replacements.length === 0 ? <DashboardEmpty title="No early replacement dues found" text="Approved requirements with replacement or oil change wording will appear as they approach due."/> :
+          <div className="dashboard-list">{replacements.slice(0, 6).map((r) => <div className="dashboard-list-row" key={r.id}><div className="dashboard-list-main"><strong>{r.equipment.sap_equipment_no} · {r.component.component_name}</strong><span>{r.method || "Replacement"} · Due {dueLabel(r)}</span></div><span className={"dashboard-pill " + r.status}>{r.daysLeft >= 0 ? r.daysLeft + " days" : r.hoursLeft != null ? Math.max(0, Math.round(r.hoursLeft)) + " h left" : "Upcoming"}</span></div>)}</div>}
+      </section>
+      <section className="panel">
+        <PanelHeader title="Oil analysis attention" subtitle="Samples that need review or follow-up" action={<button className="link-button" onClick={() => go("Oil Analysis")}>Open oil analysis <Icon name="arrow" size={15}/></button>}/>
+        {busy ? <Loading/> : oilAlerts.length === 0 ? <DashboardEmpty title="No abnormal samples" text="Warning, alarm, and critical results will be listed here."/> :
+          <div className="dashboard-list">{oilAlerts.slice(0, 6).map((o) => <div className="dashboard-list-row" key={o.id}><div className="dashboard-list-main"><strong>{o.sample_id || "Oil sample"} · {equipmentLabel(o.equipment_id)}</strong><span>{dateLabel(o.sample_date)}{o.recommendation ? " · " + o.recommendation : ""}</span></div><span className={"dashboard-pill " + String(o.status).toLowerCase()}>{o.status}</span></div>)}</div>}
+      </section>
+      <section className="panel">
+        <PanelHeader title="Lubricant stock warnings" subtitle="Store items at or below minimum stock" action={<button className="link-button" onClick={() => go("Inventory")}>Open inventory <Icon name="arrow" size={15}/></button>}/>
+        {busy ? <Loading/> : stockAlerts.length === 0 ? <DashboardEmpty title="Stock levels look healthy" text="Items at or below minimum stock will be listed here."/> :
+          <div className="dashboard-list">{stockAlerts.slice(0, 6).map((i) => { const critical = i.critical_stock != null && Number(i.current_stock || 0) <= Number(i.critical_stock); return <div className="dashboard-list-row" key={i.id}><div className="dashboard-list-main"><strong>{lubricantLabel(i.lubricant_id)}</strong><span>{i.store_location || "Store not specified"} · {i.current_stock} {i.unit || ""} on hand · minimum {i.minimum_stock} {i.unit || ""}</span></div><span className={"dashboard-pill " + (critical ? "overdue" : "due-soon")}>{critical ? "Critical" : "Low"}</span></div>;})}</div>}
+      </section>
+      <section className="panel">
+        <PanelHeader title="Recently completed work" subtitle="Latest completed lubrication activities" action={<button className="link-button" onClick={() => go("Activities")}>Open activities <Icon name="arrow" size={15}/></button>}/>
+        {busy ? <Loading/> : recent.length === 0 ? <DashboardEmpty title="No completed activities yet" text="Recorded work will appear here with equipment and technician details."/> :
+          <div className="dashboard-list">{recent.map((a) => <div className="dashboard-list-row" key={a.id}><div className="dashboard-list-main"><strong>{equipmentLabel(a.equipment_id)}</strong><span>{dateLabel(a.activity_date)} · {a.activity_type?.replaceAll("_", " ") || "Lubrication"} · {a.technician_name || "Technician not recorded"}</span></div><span className="dashboard-pill normal">Completed</span></div>)}</div>}
+      </section>
+      <section className="panel">
+        <PanelHeader title="Equipment and setup" subtitle="Foundation records for the lubrication program"/>
+        <div className="progress-list"><ProgressRow label="Active equipment" value={activeEquipmentCount} hint={totalEquipmentCount + " registered records"}/><ProgressRow label="Components" value={components.length} hint="Linked machine components"/><ProgressRow label="Lubricant master" value={lubricants.length} hint="Products in the master list"/><ProgressRow label="High-criticality equipment" value={high} hint="Assets needing priority focus" alert/></div>
+        <div className="setup-note"><div><strong>Next setup step</strong><span>Review approved requirements and use clear replacement method names.</span></div><button className="secondary-button" onClick={() => go("Lubrication Requirements")}>Open requirements</button></div>
+      </section>
+      <section className="panel dashboard-equipment-panel">
+        <PanelHeader title="Equipment overview" subtitle="Recently registered equipment" action={<button className="link-button" onClick={() => go("Equipment")}>View register <Icon name="arrow" size={15}/></button>}/>
+        {loading ? <Loading/> : equipment.length === 0 ? <Empty icon="equipment" title="No equipment registered yet" text="Add your first equipment record to start the lubrication master setup." action={<button className="primary-button" onClick={openEquipmentForm}><Icon name="plus" size={16}/> Add equipment</button>}/> :
+          <Table compact><thead><tr><Th>SAP EQUIPMENT #</Th><Th>DESCRIPTION</Th><Th>CRITICALITY</Th><Th>STATUS</Th></tr></thead><tbody>{equipment.slice(0, 6).map((e) => <tr key={e.id}><td><strong className="primary-cell">{e.sap_equipment_no}</strong></td><td>{e.description}</td><td><Criticality value={e.lubrication_criticality}/></td><td><Status value={e.status}/></td></tr>)}</tbody></Table>}
+      </section>
     </div>
   </>;
 }
-
+function DashboardEmpty({ title, text }) { return <div className="dashboard-empty"><strong>{title}</strong><span>{text}</span></div>; }
 function Kpi({ icon, label, value, detail, tone }) { return <div className="kpi-card"><div className={`kpi-icon ${tone}`}><Icon name={icon}/></div><div className="kpi-label">{label}</div><div className="kpi-value">{value}</div><div className="kpi-detail">{detail}</div></div>; }
 function ProgressRow({ label, value, hint, alert }) { return <div className="progress-row"><div className="progress-top"><strong>{label}</strong><b className={alert ? "text-danger" : ""}>{value}</b></div><div className="progress-track"><span style={{ width: `${Math.min(100, value > 0 ? 100 : 0)}%` }}/></div><small>{hint}</small></div>; }
 function FormCard({ title, subtitle, onClose, children }) { return <section className="form-card"><div className="form-card-head"><div><div className="card-kicker">DATA ENTRY</div><h2>{title}</h2><p>{subtitle}</p></div>{onClose && <button className="close-button" type="button" onClick={onClose}><Icon name="close" size={18}/></button>}</div>{children}</section>; }
@@ -402,3 +535,6 @@ function Empty({ icon, title, text, action }) { return <div className="empty-sta
 function Placeholder({ page, go }) { return <section className="placeholder"><div className="placeholder-icon"><Icon name={page === "Alerts" ? "bell" : page === "Running Hours" ? "clock" : page === "Reports" ? "report" : "settings"} size={30}/></div><div className="card-kicker">MODULE</div><h2>{page}</h2><p>This workspace is reserved for the next implementation stage. The modern shell, navigation, data-entry pattern and database-backed master-data modules are ready for expansion here.</p>{page === "Running Hours" && <button className="secondary-button" onClick={() => go("Equipment Relationships")}>Review equipment relationships</button>}</section>; }
 
 export default Dashboard;
+
+
+
