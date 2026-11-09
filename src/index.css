@@ -97,3 +97,85 @@
 .module-loading-screen{min-height:330px;display:grid;place-items:center;padding:28px}
 .module-loading-card{width:min(100%,420px)}
 .module-loading-card .secondary-button{margin-top:5px}
+
+
+/* Mobile navigation and responsive workspace refinements */
+.mobile-menu-toggle{display:none}
+.mobile-nav-backdrop{display:none}
+@media(max-width:800px){
+  .sidebar{position:fixed;inset:0 auto 0 0;width:min(86vw,320px);height:100dvh;transform:translateX(-102%);transition:transform .22s ease;z-index:1001;box-shadow:14px 0 38px rgba(12,29,50,.24);overflow:hidden}
+  .sidebar.mobile-open{transform:translateX(0)}
+  .brand{height:72px;flex:none}
+  .plant-selector{display:flex;margin:13px}
+  .sidebar-footer{display:flex}
+  .navigation{display:block;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:4px 11px 16px}
+  .nav-group{min-width:0;margin-top:13px}
+  .nav-heading{padding-bottom:6px}
+  .nav-item{width:100%;justify-content:flex-start;padding:11px;font-size:12px}
+  .mobile-nav-backdrop{display:block;position:fixed;inset:0;z-index:1000;border:0;background:rgba(10,25,43,.48);touch-action:manipulation}
+  .main-content{margin-left:0}
+  .topbar{height:60px;padding:0 14px;justify-content:flex-start}
+  .mobile-menu-toggle{width:38px;height:38px;display:grid;place-items:center;flex:none;border:1px solid #dce5ef;border-radius:9px;background:#fff;color:#294867}
+  .mobile-menu-lines{display:grid;gap:4px}
+  .mobile-menu-lines i{display:block;width:16px;height:2px;border-radius:2px;background:currentColor}
+  .breadcrumb{min-width:0;flex:1;overflow:hidden;white-space:nowrap}
+  .breadcrumb strong{overflow:hidden;text-overflow:ellipsis}
+  .topbar-right{margin-left:auto}
+  .environment-label{display:none}
+  .page-content{padding:21px 16px 22px}
+  .page-heading{gap:13px;margin-bottom:18px}
+  .page-heading h1{font-size:26px}
+  .dashboard-grid-wide{grid-template-columns:minmax(0,1fr)}
+  .dashboard-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .kpi-card{min-width:0;padding:13px}
+  .kpi-value{font-size:25px}
+  .kpi-detail{line-height:1.5}
+  .table-wrap{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch}
+  .table-wrap table{width:max-content}
+  .module-panel>.table-wrap{max-height:65vh}
+  .form-card,.module-form{border-radius:11px}
+  .form-card-head,.module-form-head{padding:15px}
+  .form-section{padding:15px}
+  .form-grid,.module-form-grid{grid-template-columns:minmax(0,1fr);gap:12px}
+  .field.full,.module-form-grid .field.full{grid-column:auto}
+  .relationship-builder{grid-template-columns:minmax(0,1fr);gap:12px}
+  .relationship-arrow{display:flex;transform:rotate(90deg);margin:0}
+  .relationship-options{grid-template-columns:minmax(0,1fr)}
+  .module-toolbar{align-items:stretch}
+  .module-toolbar input,.module-toolbar select,.module-toolbar .primary-button{min-height:40px}
+  .module-panel-head{padding:15px}
+  .schedule-summary,.oil-kpis,.inventory-kpis,.alert-summary,.report-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dashboard-list{padding:4px 14px}
+  .dashboard-list-row{gap:8px}
+  .page-footer{gap:6px;padding:18px 0}
+}
+@media(max-width:520px){
+  .topbar{padding:0 10px;gap:8px}
+  .mobile-menu-toggle{width:36px;height:36px}
+  .page-content{padding:17px 12px}
+  .page-heading h1{font-size:23px}
+  .subtitle{font-size:11px}
+  .heading-actions{width:100%}
+  .heading-actions .primary-button{width:100%;min-height:42px}
+  .dashboard-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kpi-icon{width:31px;height:31px;margin-bottom:10px}
+  .kpi-value{font-size:22px}
+  .panel-header,.module-panel-head{gap:10px}
+  .panel-header h2,.module-panel-head h2{font-size:14px}
+  .panel-header p,.module-panel-head p{font-size:9px}
+  .table-wrap table{min-width:760px}
+  .module-panel .table-wrap table{min-width:920px}
+  .form-actions,.module-form-actions{position:sticky;bottom:0;z-index:4;gap:8px;padding:12px;background:#fbfcfe}
+  .form-actions .primary-button,.form-actions .secondary-button,.module-form-actions .primary-button,.module-form-actions .secondary-button{min-height:42px;flex:1}
+  .child-picker-menu{left:0;right:0;min-width:0}
+  .child-picker-tools input{min-width:100px}
+  .app-toast{right:10px;bottom:10px;max-width:calc(100vw - 20px)}
+  .workspace-loading-card,.module-loading-card{padding:20px 17px}
+  .report-hero{padding:17px}
+  .setting-card{padding:11px}
+}
+@media(prefers-reduced-motion:reduce){
+  .sidebar{transition:none}
+  .workspace-spinner{animation-duration:1.5s}
+  .app-toast{animation:none}
+}

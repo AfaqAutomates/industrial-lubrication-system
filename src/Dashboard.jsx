@@ -134,6 +134,14 @@ function Dashboard() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [toast, setToast] = useState(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return undefined;
+    function closeOnEscape(event) { if (event.key === "Escape") setMobileNavOpen(false); }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     const message = error || notice;
@@ -237,7 +245,7 @@ function Dashboard() {
   const componentTypeSuggestions = useMemo(() => [...new Set(components.map((x) => x.component_type).filter(Boolean))].sort(), [components]);
 
   function clearMessages() { setError(""); setNotice(""); }
-  function go(page) { setActivePage(page); clearMessages(); setSearch(""); setStatusFilter("all"); }
+  function go(page) { setActivePage(page); setMobileNavOpen(false); clearMessages(); setSearch(""); setStatusFilter("all"); }
   function updateForm(e) { const { name, value } = e.target; setForm((p) => ({ ...p, [name]: value, ...(name === "plant_id" ? { area_id: "" } : {}) })); }
 
   async function saveEquipment(e) {
@@ -342,19 +350,20 @@ function Dashboard() {
 
   return (
     <div className="app-shell" aria-busy={workspaceBusy}>
+      {mobileNavOpen && <button type="button" className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}/>}
       {workspaceBusy && <div className="workspace-loading-overlay" role="status" aria-live="polite"><div className="workspace-loading-card"><span className="workspace-spinner"/><strong>{loading ? "Loading workspace data…" : "Working…"}</strong><span>{loading ? "Getting the latest equipment and lubrication records." : "Please wait while your change is saved."}</span></div></div>}
       {toast && <ToastNotice type={toast.type} message={toast.message} onClose={() => setToast(null)}/>}
-      <aside className="sidebar">
+      <aside className={"sidebar " + (mobileNavOpen ? "mobile-open" : "")}>
         <div className="brand"><div className="brand-mark">L</div><div><strong>LUBRICATION</strong><span>RELIABILITY SYSTEM</span></div></div>
         <div className="plant-selector"><div className="plant-icon"><Icon name="equipment" size={19}/></div><div><small>PLANT WORKSPACE</small><strong>Plant Overview</strong></div><Icon name="chevron" size={16}/></div>
-        <nav className="navigation">
+        <nav className="navigation" id="app-navigation">
           {navigation.map((group) => <div className="nav-group" key={group.section}><div className="nav-heading">{group.section}</div>{group.items.map((item) => <button key={item} className={`nav-item ${activePage === item ? "selected" : ""}`} onClick={() => go(item)}><span className="nav-icon"><Icon name={pageIcon(item)} size={16}/></span><span>{item}</span>{item === "Alerts" && <span className="nav-count">!</span>}</button>)}</div>)}
         </nav>
         <div className="sidebar-footer"><span className="connection-dot"/><div><strong>Supabase connected</strong><span>Database-backed workspace</span></div></div>
       </aside>
 
       <main className="main-content">
-        <header className="topbar"><div className="breadcrumb"><span>Lubrication System</span><span>/</span><strong>{activePage}</strong></div><div className="topbar-right"><span className="environment-label"><i/> LIVE DATABASE</span><div className="avatar">A</div><div className="user-label"><strong>Administrator</strong><span>Master admin workspace</span></div></div></header>
+        <header className="topbar"><button type="button" className="mobile-menu-toggle" aria-label="Open navigation menu" aria-controls="app-navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}><span className="mobile-menu-lines" aria-hidden="true"><i/><i/><i/></span></button><div className="breadcrumb"><span>Lubrication System</span><span>/</span><strong>{activePage}</strong></div><div className="topbar-right"><span className="environment-label"><i/> LIVE DATABASE</span><div className="avatar">A</div><div className="user-label"><strong>Administrator</strong><span>Master admin workspace</span></div></div></header>
         <section className="page-content">
           <div className="page-heading"><div><div className="eyebrow">{meta[0].toUpperCase()}</div><h1>{activePage}</h1><p className="subtitle">{meta[1]}</p></div><div className="heading-actions">
             {activePage === "Equipment" && <button className="primary-button" onClick={openEquipmentForm}><Icon name="plus" size={17}/> Add equipment</button>}
@@ -598,6 +607,7 @@ function Empty({ icon, title, text, action }) { return <div className="empty-sta
 function Placeholder({ page, go }) { return <section className="placeholder"><div className="placeholder-icon"><Icon name={page === "Alerts" ? "bell" : page === "Running Hours" ? "clock" : page === "Reports" ? "report" : "settings"} size={30}/></div><div className="card-kicker">MODULE</div><h2>{page}</h2><p>This workspace is reserved for the next implementation stage. The modern shell, navigation, data-entry pattern and database-backed master-data modules are ready for expansion here.</p>{page === "Running Hours" && <button className="secondary-button" onClick={() => go("Equipment Relationships")}>Review equipment relationships</button>}</section>; }
 
 export default Dashboard;
+
 
 
 
