@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import RemainingModules from "./RemainingModules";
 import "./index.css";
@@ -130,6 +130,7 @@ function Dashboard() {
   const [deactivatingLubricantId, setDeactivatingLubricantId] = useState(null);
 
   const [loading, setLoading] = useState(true);
+  const loadDataRequestRef = useRef(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [toast, setToast] = useState(null);
@@ -167,31 +168,42 @@ function Dashboard() {
   }
 
   async function loadData() {
-    setLoading(true);
-    try {
-      const [plantResult, areaResult, equipmentResult, relationshipResult, componentResult, lubricantResult, requirementResult,totalCountResult, activeCountResult] = await Promise.all([
-        
-        supabase.from("plants").select("id, code, name").eq("is_active", true).order("name"),
-        supabase.from("areas").select("id, plant_id, code, name").eq("is_active", true).order("name"),
-        fetchAllEquipment(),
-        supabase.from("equipment_relationships").select("id, parent_equipment_id, child_equipment_id, relationship_type, running_hours_rule, notes, is_active, created_at").order("created_at", { ascending: false }),
-        supabase.from("components").select("id, equipment_id, component_name, component_type, description, criticality, status, remarks, created_at").order("component_name"),
-        supabase.from("lubricants").select("id, product_code, product_name, manufacturer, lubricant_type, grade, base_oil, thickener, nlgi_grade, description, status, created_at, updated_at").order("product_name"),
-        supabase.from("lubrication_requirements").select("id, component_id, lubrication_point_id, lubricant_id, frequency_basis, interval_hours, interval_days, quantity, quantity_unit, method, source_reference, revision, effective_from, approved_by, approval_status, is_active, instructions, created_at, updated_at").order("created_at", { ascending: false }),
-        supabase.from("equipment").select("id", { count: "exact", head: true }),
-        supabase.from("equipment").select("id", { count: "exact", head: true }).eq("status", "active"),
-      ]);
-      const firstError = [plantResult, areaResult, equipmentResult, relationshipResult, componentResult, lubricantResult, requirementResult, totalCountResult, activeCountResult].find((r) => r.error)?.error;
-      if (firstError) throw new Error(firstError.message);
-      setPlants(plantResult.data || []); setAreas(areaResult.data || []); setEquipment(equipmentResult.data || []);
-      setTotalEquipmentCount(totalCountResult.count ?? 0);
-      setActiveEquipmentCount(activeCountResult.count ?? 0);
-      setRelationships(relationshipResult.data || []); setComponents(componentResult.data || []);
-      setLubricants(lubricantResult.data || []); setRequirements(requirementResult.data || []);
-    } catch (e) { setError(e.message || "Unable to load database records."); }
-    finally { setLoading(false); }
+    if (loadDataRequestRef.current) return loadDataRequestRef.current;
+    const request = (async () => {
+      setLoading(true);
+      try {
+        const [plantResult, areaResult, equipmentResult, relationshipResult, componentResult, lubricantResult, requirementResult, totalCountResult, activeCountResult] = await Promise.all([
+          supabase.from("plants").select("id, code, name").eq("is_active", true).order("name"),
+          supabase.from("areas").select("id, plant_id, code, name").eq("is_active", true).order("name"),
+          fetchAllEquipment(),
+          supabase.from("equipment_relationships").select("id, parent_equipment_id, child_equipment_id, relationship_type, running_hours_rule, notes, is_active, created_at").order("created_at", { ascending: false }),
+          supabase.from("components").select("id, equipment_id, component_name, component_type, description, criticality, status, remarks, created_at").order("component_name"),
+          supabase.from("lubricants").select("id, product_code, product_name, manufacturer, lubricant_type, grade, base_oil, thickener, nlgi_grade, description, status, created_at, updated_at").order("product_name"),
+          supabase.from("lubrication_requirements").select("id, component_id, lubrication_point_id, lubricant_id, frequency_basis, interval_hours, interval_days, quantity, quantity_unit, method, source_reference, revision, effective_from, approved_by, approval_status, is_active, instructions, created_at, updated_at").order("created_at", { ascending: false }),
+          supabase.from("equipment").select("id", { count: "exact", head: true }),
+          supabase.from("equipment").select("id", { count: "exact", head: true }).eq("status", "active"),
+        ]);
+        const firstError = [plantResult, areaResult, equipmentResult, relationshipResult, componentResult, lubricantResult, requirementResult, totalCountResult, activeCountResult].find((result) => result.error)?.error;
+        if (firstError) throw new Error(firstError.message);
+        setPlants(plantResult.data || []);
+        setAreas(areaResult.data || []);
+        setEquipment(equipmentResult.data || []);
+        setTotalEquipmentCount(totalCountResult.count ?? 0);
+        setActiveEquipmentCount(activeCountResult.count ?? 0);
+        setRelationships(relationshipResult.data || []);
+        setComponents(componentResult.data || []);
+        setLubricants(lubricantResult.data || []);
+        setRequirements(requirementResult.data || []);
+      } catch (e) {
+        setError(e.message || "Unable to load database records.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    loadDataRequestRef.current = request;
+    try { await request; }
+    finally { if (loadDataRequestRef.current === request) loadDataRequestRef.current = null; }
   }
-
   useEffect(() => { loadData(); }, []);
 
   const activeEquipment = useMemo(() => equipment.filter((x) => x.status === "active"), [equipment]);
@@ -325,10 +337,12 @@ function Dashboard() {
   function pageIcon(page) { const map = { Dashboard: "grid", Equipment: "equipment", "Equipment Relationships": "link", Components: "component", "Lubrication Requirements": "schedule", "Work Schedule": "schedule", Activities: "activity", "Running Hours": "clock", "Oil Analysis": "flask", "Lubricant Master": "oil", Inventory: "box", Reports: "report", Alerts: "bell", "User Management": "users", Settings: "settings", "Audit History": "report" }; return map[page] || "grid"; }
   function openEquipmentForm() { setEditingId(null); setForm(emptyEquipmentForm); clearMessages(); setShowForm(true); }
 
+  const workspaceBusy = loading || saving || savingRelationship || savingComponent || savingRequirement || savingLubricant || deactivatingId !== null || deactivatingRelationshipId !== null || deactivatingComponentId !== null || deactivatingRequirementId !== null || deactivatingLubricantId !== null;
   const meta = pageMeta[activePage] || ["Workspace", `Your ${activePage.toLowerCase()} workspace.`];
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" aria-busy={workspaceBusy}>
+      {workspaceBusy && <div className="workspace-loading-overlay" role="status" aria-live="polite"><div className="workspace-loading-card"><span className="workspace-spinner"/><strong>{loading ? "Loading workspace data…" : "Working…"}</strong><span>{loading ? "Getting the latest equipment and lubrication records." : "Please wait while your change is saved."}</span></div></div>}
       {toast && <ToastNotice type={toast.type} message={toast.message} onClose={() => setToast(null)}/>}
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">L</div><div><strong>LUBRICATION</strong><span>RELIABILITY SYSTEM</span></div></div>
@@ -584,6 +598,7 @@ function Empty({ icon, title, text, action }) { return <div className="empty-sta
 function Placeholder({ page, go }) { return <section className="placeholder"><div className="placeholder-icon"><Icon name={page === "Alerts" ? "bell" : page === "Running Hours" ? "clock" : page === "Reports" ? "report" : "settings"} size={30}/></div><div className="card-kicker">MODULE</div><h2>{page}</h2><p>This workspace is reserved for the next implementation stage. The modern shell, navigation, data-entry pattern and database-backed master-data modules are ready for expansion here.</p>{page === "Running Hours" && <button className="secondary-button" onClick={() => go("Equipment Relationships")}>Review equipment relationships</button>}</section>; }
 
 export default Dashboard;
+
 
 
 

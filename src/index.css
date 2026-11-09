@@ -85,3 +85,15 @@
 .app-toast button{margin-left:auto;border:0;background:transparent;color:inherit;font-size:18px;line-height:1;padding:0 2px}
 @keyframes app-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:520px){.app-toast{right:12px;bottom:12px;max-width:calc(100vw - 24px)}}
+
+
+/* Loading feedback and request lock screens */
+.workspace-loading-overlay{position:fixed;inset:0;z-index:900;display:grid;place-items:center;padding:20px;background:rgba(244,247,251,.78);backdrop-filter:blur(2px)}
+.workspace-loading-card,.module-loading-card{display:flex;flex-direction:column;align-items:center;gap:10px;max-width:380px;padding:24px 28px;border:1px solid #e1e8f0;border-radius:14px;background:#fff;box-shadow:0 16px 40px rgba(21,43,74,.14);text-align:center}
+.workspace-loading-card strong,.module-loading-card strong{font:700 14px Manrope,Arial,sans-serif;color:#26364a}
+.workspace-loading-card>span:last-child,.module-loading-card>span:not(.workspace-spinner){font-size:10px;color:#8290a2;line-height:1.6}
+.workspace-spinner{width:28px;height:28px;border:3px solid #dce7f6;border-top-color:#2f6fed;border-radius:50%;animation:workspace-spin .75s linear infinite}
+@keyframes workspace-spin{to{transform:rotate(360deg)}}
+.module-loading-screen{min-height:330px;display:grid;place-items:center;padding:28px}
+.module-loading-card{width:min(100%,420px)}
+.module-loading-card .secondary-button{margin-top:5px}

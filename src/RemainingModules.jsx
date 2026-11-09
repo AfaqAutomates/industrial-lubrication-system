@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "./lib/supabase";
 import OilReportIntake from "./OilReportIntake";
@@ -50,6 +50,9 @@ export default function RemainingModules({ page, equipment, components, lubrican
   const [settings, setSettings] = useState([]);
   const [procurement, setProcurement] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [moduleLoading, setModuleLoading] = useState(true);
+  const [moduleLoadError, setModuleLoadError] = useState("");
+  const moduleLoadRequestRef = useRef(null);
 
   const [activityForm, setActivityForm] = useState(emptyActivity);
   const [oilForm, setOilForm] = useState(emptyOil);
@@ -70,6 +73,11 @@ export default function RemainingModules({ page, equipment, components, lubrican
   const [runningFileName, setRunningFileName] = useState("");
   const [settingDraft, setSettingDraft] = useState({});
 
+function ModuleLoadingState({ title, detail, onRetry }) {
+  return <div className="module-loading-screen" role="status" aria-live="polite">
+    <div className="module-loading-card"><span className="workspace-spinner"/><strong>{title}</strong><span>{detail}</span>{onRetry && <button type="button" className="secondary-button" onClick={onRetry}>Try again</button>}</div>
+  </div>;
+}
   async function writeAudit(module, recordId, action, newData) {
     try {
       const { data } = await supabase.auth.getUser();
@@ -78,28 +86,47 @@ export default function RemainingModules({ page, equipment, components, lubrican
   }
 
   async function loadModuleData() {
-    try {
-      const [rh, imp, act, oa, inv, tx, al, pf, st, pr] = await Promise.all([
-        supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000),
-        supabase.from("running_hours_imports").select("*").order("imported_at", { ascending: false }).limit(50),
-        supabase.from("lubrication_activities").select("*").order("activity_date", { ascending: false }).limit(1000),
-        supabase.from("oil_analysis_samples").select("*").order("sample_date", { ascending: false }).limit(500),
-        supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }),
-        supabase.from("lubricant_inventory_transactions").select("*").order("transaction_date", { ascending: false }).limit(1000),
-        supabase.from("system_alerts").select("*").order("created_at", { ascending: false }).limit(500),
-        supabase.from("profiles").select("id,email,full_name,is_admin").order("full_name"),
-        supabase.from("system_settings").select("*").order("setting_key"),
-        supabase.from("procurement_records").select("*").order("delivery_expected", { ascending: true }).limit(500),
-      ]);
-      const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr].find(x => x.error)?.error;
-      if (first) throw new Error(first.message);
-      setRunningRows(rh.data || []); setImports(imp.data || []); setActivities(act.data || []); setOils(oa.data || []);
-      setInventory(inv.data || []); setInventoryTx(tx.data || []); setAlerts(al.data || []); setProfiles(pf.data || []);
-      setSettings(st.data || []); setProcurement(pr.data || []); setLoaded(true);
-    } catch (e) { setError(e.message); }
-  }
-
-  useEffect(() => { if (!loaded) loadModuleData(); }, [loaded]);
+    if (moduleLoadRequestRef.current) return moduleLoadRequestRef.current;
+    const request = (async () => {
+      setModuleLoading(true);
+      setModuleLoadError("");
+      try {
+        const [rh, imp, act, oa, inv, tx, al, pf, st, pr] = await Promise.all([
+          supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000),
+          supabase.from("running_hours_imports").select("*").order("imported_at", { ascending: false }).limit(50),
+          supabase.from("lubrication_activities").select("*").order("activity_date", { ascending: false }).limit(1000),
+          supabase.from("oil_analysis_samples").select("*").order("sample_date", { ascending: false }).limit(500),
+          supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }),
+          supabase.from("lubricant_inventory_transactions").select("*").order("transaction_date", { ascending: false }).limit(1000),
+          supabase.from("system_alerts").select("*").order("created_at", { ascending: false }).limit(500),
+          supabase.from("profiles").select("id,email,full_name,is_admin").order("full_name"),
+          supabase.from("system_settings").select("*").order("setting_key"),
+          supabase.from("procurement_records").select("*").order("delivery_expected", { ascending: true }).limit(500),
+        ]);
+        const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr].find((result) => result.error)?.error;
+        if (first) throw new Error(first.message);
+        setRunningRows(rh.data || []);
+        setImports(imp.data || []);
+        setActivities(act.data || []);
+        setOils(oa.data || []);
+        setInventory(inv.data || []);
+        setInventoryTx(tx.data || []);
+        setAlerts(al.data || []);
+        setProfiles(pf.data || []);
+        setSettings(st.data || []);
+        setProcurement(pr.data || []);
+        setLoaded(true);
+      } catch (e) {
+        setModuleLoadError(e.message || "Could not load module records.");
+        setError(e.message || "Could not load module records.");
+      } finally {
+        setModuleLoading(false);
+      }
+    })();
+    moduleLoadRequestRef.current = request;
+    try { await request; }
+    finally { if (moduleLoadRequestRef.current === request) moduleLoadRequestRef.current = null; }
+  }  useEffect(() => { if (!loaded) loadModuleData(); }, [loaded]);
 
   const hoursByEquipment = useMemo(() => {
     const direct = {};
@@ -235,23 +262,57 @@ export default function RemainingModules({ page, equipment, components, lubrican
     } catch (e2) { setError(e2.message); } finally { setSaving(false); }
   }
   async function acknowledgeAlert(item) {
-    const existing = alerts.find(x => x.id === item.id); if (!existing) { setNotice("This is a live calculated alert; it will clear automatically when the condition is corrected."); return; }
-    const { error } = await supabase.from("system_alerts").update({ status: "acknowledged", acknowledged_at: new Date().toISOString() }).eq("id", item.id); if (error) setError(error.message); else { setNotice("Alert acknowledged."); await loadModuleData(); }
+    if (saving || moduleLoading) return;
+    const existing = alerts.find(x => x.id === item.id);
+    if (!existing) { setNotice("This is a live calculated alert; it will clear automatically when the condition is corrected."); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("system_alerts").update({ status: "acknowledged", acknowledged_at: new Date().toISOString() }).eq("id", item.id);
+      if (error) throw new Error(error.message);
+      setNotice("Alert acknowledged.");
+      await loadModuleData();
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
   }
   async function saveSetting(key) {
-    const value = settingDraft[key]; const existing = settings.find(x => x.setting_key === key);
+    if (saving || moduleLoading) return;
+    const value = settingDraft[key];
+    const existing = settings.find(x => x.setting_key === key);
     if (existing && !window.confirm("Save changes to this system setting?")) { setNotice("No changes made."); return; }
-    const result = existing ? await supabase.from("system_settings").update({ setting_value: value, updated_at: new Date().toISOString() }).eq("id", existing.id) : await supabase.from("system_settings").insert({ setting_key: key, setting_value: value });
-    if (result.error) setError(result.error.message); else { setNotice("Setting saved."); await writeAudit("Settings", existing?.id || null, existing ? "update" : "create", { setting_key: key, setting_value: value }); await loadModuleData(); }
+    setSaving(true);
+    try {
+      const result = existing
+        ? await supabase.from("system_settings").update({ setting_value: value, updated_at: new Date().toISOString() }).eq("id", existing.id)
+        : await supabase.from("system_settings").insert({ setting_key: key, setting_value: value });
+      if (result.error) throw new Error(result.error.message);
+      setNotice("Setting saved.");
+      await writeAudit("Settings", existing?.id || null, existing ? "update" : "create", { setting_key: key, setting_value: value });
+      await loadModuleData();
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
   }
-  async function updateProfile(id, patch) { if (!window.confirm("Save changes to this user profile?")) { setNotice("No changes made."); return; } const { error } = await supabase.from("profiles").update(patch).eq("id", id); if (error) setError(error.message); else { setNotice("User profile updated."); await writeAudit("User Management", id, "update", patch); await loadModuleData(); } }
-
+  async function updateProfile(id, patch) {
+    if (saving || moduleLoading) return;
+    if (!window.confirm("Save changes to this user profile?")) { setNotice("No changes made."); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("profiles").update(patch).eq("id", id);
+      if (error) throw new Error(error.message);
+      setNotice("User profile updated.");
+      await writeAudit("User Management", id, "update", patch);
+      await loadModuleData();
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  }
   const filteredActivities = activities.filter(a => [labelEquipment(equipment,a.equipment_id), labelComponent(equipment,components,a.component_id), a.activity_type, a.technician_name, a.sap_notification_no, a.remarks].join(" ").toLowerCase().includes(activitySearch.toLowerCase()));
   const filteredOils = oils.filter(o => [o.sample_id, labelEquipment(equipment,o.equipment_id), labelComponent(equipment,components,o.component_id), o.laboratory, o.status, o.recommendation].join(" ").toLowerCase().includes(oilSearch.toLowerCase()));
   const filteredInventory = inventory.filter(i => [labelLubricant(lubricants,i.lubricant_id), i.store_location, i.unit].join(" ").toLowerCase().includes(inventorySearch.toLowerCase()));
 
+  if (moduleLoading || saving) return <ModuleLoadingState title={moduleLoading ? (loaded ? "Refreshing module data…" : "Loading module data…") : "Saving your change…"} detail="Please wait. This screen is temporarily locked to prevent duplicate requests."/>;
+  if (!loaded && moduleLoadError) return <ModuleLoadingState title="Could not load module data" detail={moduleLoadError} onRetry={loadModuleData}/>;
+
   if (page === "Work Schedule") return <>
-    <ModulePanel title="Lubrication work schedule" subtitle={`${scheduleRows.length} approved requirements evaluated against current calendar and running hours.`} action={<button className="secondary-button" onClick={loadModuleData}>Refresh schedule</button>}>
+    <ModulePanel title="Lubrication work schedule" subtitle={`${scheduleRows.length} approved requirements evaluated against current calendar and running hours.`} action={<button className="secondary-button" onClick={loadModuleData} disabled={moduleLoading}>{moduleLoading ? "Refreshing…" : "Refresh schedule"}</button>}>
       <div className="schedule-summary"><div><b>{scheduleRows.filter(x=>x.status==="overdue").length}</b><span>Overdue</span></div><div><b>{scheduleRows.filter(x=>x.status==="due-soon").length}</b><span>Due soon</span></div><div><b>{scheduleRows.filter(x=>x.status==="scheduled").length}</b><span>Scheduled</span></div></div>
       <div className="table-wrap"><table><thead><tr><th>EQUIPMENT</th><th>COMPONENT</th><th>ACTIVITY</th><th>DUE DATE</th><th>DUE HOURS</th><th>CURRENT HOURS</th><th>TRIGGER</th><th>STATUS</th></tr></thead><tbody>{scheduleRows.map(x=><tr key={x.id}><td><strong>{x.equipment.sap_equipment_no}</strong><small className="cell-sub">{x.equipment.description}</small></td><td>{x.component.component_name}</td><td>{x.method || "Lubrication"}</td><td>{fmtDate(x.calendarDue)}</td><td>{x.hoursDue == null ? "—" : `${Math.round(x.hoursDue)} h`}</td><td>{x.currentHours == null ? "—" : `${Math.round(x.currentHours)} h`}</td><td>{x.dueReason}</td><td><Badge value={x.status} tone={x.status}/></td></tr>)}</tbody></table></div>
     </ModulePanel>
@@ -361,7 +422,7 @@ export default function RemainingModules({ page, equipment, components, lubrican
 
   if (page === "Alerts") {
     const visible = derivedAlerts.filter(a => alertFilter === "all" || String(a.status).toLowerCase() === alertFilter);
-    return <ModulePanel title="Alerts and attention" subtitle="Actionable schedule, oil-analysis, inventory and data-quality signals." action={<select className="alert-filter" value={alertFilter} onChange={e=>setAlertFilter(e.target.value)}><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="all">All</option></select>}><div className="alert-summary"><div><b>{derivedAlerts.filter(x=>x.status==="open").length}</b><span>Open</span></div><div><b>{derivedAlerts.filter(x=>x.severity==="critical").length}</b><span>Critical</span></div><div><b>{derivedAlerts.filter(x=>x.source==="Work Schedule").length}</b><span>Schedule</span></div><div><b>{derivedAlerts.filter(x=>x.source==="Inventory").length}</b><span>Inventory</span></div></div><div className="alert-list">{visible.map(a=><div className="alert-row" key={a.id}><div className={`alert-severity ${a.severity}`}/><div className="alert-main"><strong>{a.title}</strong><p>{a.message}</p><small>{a.source || "System"}</small></div><Badge value={a.status}/>{a.status === "open" && <button className="table-action" onClick={()=>acknowledgeAlert(a)}>Acknowledge</button>}</div>)}{!visible.length && <div className="module-empty"><strong>No alerts in this view</strong><p>The system will show attention items here as schedule, oil-analysis and inventory conditions change.</p></div>}</div></ModulePanel>;
+    return <ModulePanel title="Alerts and attention" subtitle="Actionable schedule, oil-analysis, inventory and data-quality signals." action={<select className="alert-filter" value={alertFilter} onChange={e=>setAlertFilter(e.target.value)}><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="all">All</option></select>}><div className="alert-summary"><div><b>{derivedAlerts.filter(x=>x.status==="open").length}</b><span>Open</span></div><div><b>{derivedAlerts.filter(x=>x.severity==="critical").length}</b><span>Critical</span></div><div><b>{derivedAlerts.filter(x=>x.source==="Work Schedule").length}</b><span>Schedule</span></div><div><b>{derivedAlerts.filter(x=>x.source==="Inventory").length}</b><span>Inventory</span></div></div><div className="alert-list">{visible.map(a=><div className="alert-row" key={a.id}><div className={`alert-severity ${a.severity}`}/><div className="alert-main"><strong>{a.title}</strong><p>{a.message}</p><small>{a.source || "System"}</small></div><Badge value={a.status}/>{a.status === "open" && <button className="table-action" onClick={()=>acknowledgeAlert(a)} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Acknowledge"}</button>}</div>)}{!visible.length && <div className="module-empty"><strong>No alerts in this view</strong><p>The system will show attention items here as schedule, oil-analysis and inventory conditions change.</p></div>}</div></ModulePanel>;
   }
 
   if (page === "Reports") {
@@ -370,14 +431,16 @@ export default function RemainingModules({ page, equipment, components, lubrican
     return <><div className="report-hero"><div><div className="card-kicker">MANAGEMENT REPORT</div><h2>Lubrication performance</h2><p>Standardized management view based on the application records currently available.</p></div><button className="primary-button" onClick={exportReport}>Export Excel report</button></div><div className="report-kpis"><div><b>{completed.length}</b><span>Completed activities</span></div><div><b>{qty.toFixed(1)}</b><span>Recorded quantity</span></div><div><b>{overdue}</b><span>Overdue requirements</span></div><div><b>{abnormal}</b><span>Abnormal oil samples</span></div></div><div className="module-grid-2"><ModulePanel title="Report sections" subtitle="The monthly report is designed around the project specification."><ul className="report-list"><li>Executive summary</li><li>Lubrication activities</li><li>Oil replacements and greasing</li><li>Top-ups and consumption</li><li>Oil analysis</li><li>Overdue activities</li><li>Stock status</li><li>Procurement</li><li>Abnormal findings and corrective actions</li></ul></ModulePanel><ModulePanel title="Data freshness" subtitle="Imported SAP data should always be treated as time-bound."><div className="freshness-list"><div><strong>Running hours</strong><span>{imports[0] ? `Last import ${fmtDate(imports[0].imported_at)}` : "No import yet"}</span></div><div><strong>Equipment master</strong><span>Current application master</span></div><div><strong>Material stock</strong><span>Current inventory snapshot</span></div></div></ModulePanel></div></>;
   }
 
-  if (page === "User Management") return <ModulePanel title="Controlled users" subtitle="Users are still created manually through Supabase Auth. This screen manages their application profile fields; it does not expose a service-role key in the browser."><div className="info-banner"><div className="banner-icon">i</div><div><strong>Security boundary</strong><p>Create authentication users in Supabase. Use this portal only for profile/role metadata and application permissions.</p></div></div><div className="table-wrap"><table><thead><tr><th>EMAIL</th><th>FULL NAME</th><th>ADMIN</th><th>ACTION</th></tr></thead><tbody>{profiles.map(p=><tr key={p.id}><td>{p.email || "—"}</td><td><input className="inline-input" value={p.full_name || ""} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,full_name:e.target.value}:x))}/></td><td><input type="checkbox" checked={!!p.is_admin} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,is_admin:e.target.checked}:x))}/></td><td><button className="table-action" onClick={()=>{const x=profiles.find(y=>y.id===p.id); updateProfile(p.id,{full_name:x.full_name,is_admin:x.is_admin});}}>Save profile</button></td></tr>)}</tbody></table></div></ModulePanel>;
+  if (page === "User Management") return <ModulePanel title="Controlled users" subtitle="Users are still created manually through Supabase Auth. This screen manages their application profile fields; it does not expose a service-role key in the browser."><div className="info-banner"><div className="banner-icon">i</div><div><strong>Security boundary</strong><p>Create authentication users in Supabase. Use this portal only for profile/role metadata and application permissions.</p></div></div><div className="table-wrap"><table><thead><tr><th>EMAIL</th><th>FULL NAME</th><th>ADMIN</th><th>ACTION</th></tr></thead><tbody>{profiles.map(p=><tr key={p.id}><td>{p.email || "—"}</td><td><input className="inline-input" value={p.full_name || ""} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,full_name:e.target.value}:x))}/></td><td><input type="checkbox" checked={!!p.is_admin} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,is_admin:e.target.checked}:x))}/></td><td><button className="table-action" onClick={()=>{const x=profiles.find(y=>y.id===p.id); updateProfile(p.id,{full_name:x.full_name,is_admin:x.is_admin});}} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save profile"}</button></td></tr>)}</tbody></table></div></ModulePanel>;
 
-  if (page === "Settings") return <><ModulePanel title="System configuration" subtitle="Admin-controlled settings that influence thresholds and application behavior."><div className="settings-grid">{["due_soon_days","running_hours_due_soon","default_quantity_unit","low_stock_alert_enabled","oil_analysis_alerts_enabled"].map(key=>{const s=settings.find(x=>x.setting_key===key); const value=settingDraft[key] ?? s?.setting_value ?? ""; return <div className="setting-card" key={key}><div><strong>{key.replaceAll("_"," ")}</strong><small>Application setting</small></div><input value={value} onChange={e=>setSettingDraft({...settingDraft,[key]:e.target.value})}/><button className="secondary-button" onClick={()=>saveSetting(key)}>Save</button></div>;})}</div></ModulePanel><ModulePanel title="Configuration notes" subtitle="Keep engineering thresholds configurable rather than hard-coded."><div className="module-empty"><p>Oil-analysis limits, running-hour due-soon windows, stock thresholds and alert behavior should be controlled here or in their respective master-data screens.</p></div></ModulePanel></>;
+  if (page === "Settings") return <><ModulePanel title="System configuration" subtitle="Admin-controlled settings that influence thresholds and application behavior."><div className="settings-grid">{["due_soon_days","running_hours_due_soon","default_quantity_unit","low_stock_alert_enabled","oil_analysis_alerts_enabled"].map(key=>{const s=settings.find(x=>x.setting_key===key); const value=settingDraft[key] ?? s?.setting_value ?? ""; return <div className="setting-card" key={key}><div><strong>{key.replaceAll("_"," ")}</strong><small>Application setting</small></div><input value={value} onChange={e=>setSettingDraft({...settingDraft,[key]:e.target.value})}/><button className="secondary-button" onClick={()=>saveSetting(key)} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save"}</button></div>;})}</div></ModulePanel><ModulePanel title="Configuration notes" subtitle="Keep engineering thresholds configurable rather than hard-coded."><div className="module-empty"><p>Oil-analysis limits, running-hour due-soon windows, stock thresholds and alert behavior should be controlled here or in their respective master-data screens.</p></div></ModulePanel></>;
 
   if (page === "Audit History") return <ModulePanel title="Audit history" subtitle="Important changes and import operations should remain traceable."><div className="module-empty"><strong>Audit trail foundation</strong><p>The audit table is ready for application actions. Existing modules can be extended to write old/new JSON snapshots for every material change.</p></div></ModulePanel>;
 
   return null;
 }
+
+
 
 
 
