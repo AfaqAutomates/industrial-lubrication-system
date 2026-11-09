@@ -246,7 +246,9 @@ function Dashboard({ profile }) {
 
   function clearMessages() { setError(""); setNotice(""); }
   const isMasterAdmin = profile?.role === "master_admin";
-  const permittedPages = navigation.flatMap(group => group.items).filter(page => page === "User Management" ? isMasterAdmin : isMasterAdmin || profile?.module_permissions?.[page] === true);
+  const accessLevel = page => profile?.module_permissions?.[page] === true ? "edit" : profile?.module_permissions?.[page] || "none";
+  const permittedPages = navigation.flatMap(group => group.items).filter(page => page === "User Management" ? isMasterAdmin : isMasterAdmin || ["view", "edit"].includes(accessLevel(page)));
+  const canEditCurrentPage = isMasterAdmin || accessLevel(activePage) === "edit";
   const visibleNavigation = navigation.map(group => ({ ...group, items: group.items.filter(item => permittedPages.includes(item)) })).filter(group => group.items.length > 0);
   useEffect(() => {
     if (permittedPages.length && !permittedPages.includes(activePage)) setActivePage(permittedPages[0]);
@@ -373,8 +375,8 @@ function Dashboard({ profile }) {
 
       <main className="main-content">
         <header className="topbar"><button type="button" className="mobile-menu-toggle" aria-label="Open navigation menu" aria-controls="app-navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}><span className="mobile-menu-lines" aria-hidden="true"><i/><i/><i/></span></button><div className="breadcrumb"><span>Lubrication System</span><span>/</span><strong>{activePage}</strong></div><div className="topbar-right"><span className="environment-label"><i/> LIVE DATABASE</span><div className="avatar">{String(profile?.full_name || profile?.role || "U").slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{profile?.full_name || "User"}</strong><span>{isMasterAdmin ? "Master admin workspace" : "Assigned workspace"}</span></div></div></header>
-        <section className="page-content">
-          <div className="page-heading"><div><div className="eyebrow">{meta[0].toUpperCase()}</div><h1>{activePage}</h1><p className="subtitle">{meta[1]}</p></div><div className="heading-actions">
+        <section className={`page-content ${canEditCurrentPage ? "" : "view-only"}`}>
+          <div className="page-heading"><div><div className="eyebrow">{meta[0].toUpperCase()}</div><h1>{activePage}</h1><p className="subtitle">{meta[1]}</p></div>{!canEditCurrentPage && <span className="permission-badge">View only</span>}<div className="heading-actions">
             {activePage === "Equipment" && <button className="primary-button" onClick={openEquipmentForm}><Icon name="plus" size={17}/> Add equipment</button>}
             {activePage === "Components" && <button className="primary-button" onClick={startNewComponent}><Icon name="plus" size={17}/> Add component</button>}
             {activePage === "Lubricant Master" && <button className="primary-button" onClick={startNewLubricant}><Icon name="plus" size={17}/> Add lubricant</button>}
@@ -433,7 +435,7 @@ function Dashboard({ profile }) {
             </DataPanel>
           </>}
 
-          {["Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Inventory", "Reports", "Alerts", "User Management", "Settings", "Audit History"].includes(activePage) && <RemainingModules page={activePage} profile={profile} equipment={equipment} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} refresh={loadData} setNotice={setNotice} setError={setError}/>}          
+          {["Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Inventory", "Reports", "Alerts", "User Management", "Settings", "Audit History"].includes(activePage) && <RemainingModules page={activePage} profile={profile} canEdit={canEditCurrentPage} equipment={equipment} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} refresh={loadData} setNotice={setNotice} setError={setError}/>}          
           <footer className="page-footer"><span>Industrial Lubrication Management & Reliability System</span><span>Plant workspace • Supabase connected</span></footer>
         </section>
       </main>

@@ -220,8 +220,13 @@
 .user-permission-toggle strong,.user-permission-toggle small{display:block}
 .user-permission-toggle strong{color:#41566e;font-size:9px}
 .user-permission-toggle small{margin-top:3px;color:#96a2b0;font-size:8px}
-.user-permission-toggle input{width:34px;height:19px;flex:none;accent-color:#0876c9;cursor:pointer}
+.user-permission-toggle select{width:125px;min-width:110px;flex:none;border:1px solid #d8e1eb;border-radius:7px;padding:7px 8px;background:#fff;color:#3d526a;font-size:9px}
 .user-access-actions{margin-top:10px;border-top:1px solid #e8edf3}
 .user-access-buttons{display:flex;gap:8px;flex:none}
 @media(max-width:700px){.user-permission-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.user-role-badge{display:none}}
 @media(max-width:480px){.user-access-list{padding:8px 11px 14px}.user-access-summary{gap:8px;padding:10px}.user-permission-grid{grid-template-columns:1fr}.user-access-detail-head,.user-access-actions{align-items:stretch;flex-direction:column}.user-access-actions .primary-button,.user-access-actions .secondary-button{width:100%}.user-access-buttons{flex-direction:column}.user-permission-count{font-size:7px}.user-account-status{display:none}}
+
+.view-only .heading-actions,.view-only .form-card,.view-only .module-form,.view-only .actions,.view-only .table-actions,.view-only .form-actions-inline,.view-only .module-toolbar>.primary-button,.view-only .module-panel-head .file-button,.view-only .alert-row .table-action,.view-only .setting-card .secondary-button{display:none!important}
+.view-only .primary-button{display:none!important}
+.view-only .report-hero .primary-button{display:inline-flex!important}
+.view-only .setting-card input{pointer-events:none;opacity:.65}
