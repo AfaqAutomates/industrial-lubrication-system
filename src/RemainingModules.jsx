@@ -197,6 +197,7 @@ export default function RemainingModules({ page, equipment, components, lubrican
     try {
       const payload = { ...inventoryForm, lubricant_id: inventoryForm.lubricant_id, minimum_stock: number(inventoryForm.minimum_stock), critical_stock: number(inventoryForm.critical_stock), current_stock: number(inventoryForm.current_stock), updated_at: new Date().toISOString() };
       const existing = inventory.find(x => x.lubricant_id === payload.lubricant_id && x.store_location === payload.store_location);
+      if (existing && !window.confirm("Update the existing stock record for this lubricant and store?")) { setNotice("No changes made."); return; }
       const result = existing ? await supabase.from("lubricant_inventory").update(payload).eq("id", existing.id) : await supabase.from("lubricant_inventory").insert(payload);
       if (result.error) throw new Error(result.error.message);
       setInventoryForm(emptyInventory); setShowInventory(false); setNotice("Inventory balance saved."); await writeAudit("Inventory", existing?.id || null, existing ? "update" : "create", payload); await loadModuleData();
@@ -239,10 +240,11 @@ export default function RemainingModules({ page, equipment, components, lubrican
   }
   async function saveSetting(key) {
     const value = settingDraft[key]; const existing = settings.find(x => x.setting_key === key);
+    if (existing && !window.confirm("Save changes to this system setting?")) { setNotice("No changes made."); return; }
     const result = existing ? await supabase.from("system_settings").update({ setting_value: value, updated_at: new Date().toISOString() }).eq("id", existing.id) : await supabase.from("system_settings").insert({ setting_key: key, setting_value: value });
     if (result.error) setError(result.error.message); else { setNotice("Setting saved."); await writeAudit("Settings", existing?.id || null, existing ? "update" : "create", { setting_key: key, setting_value: value }); await loadModuleData(); }
   }
-  async function updateProfile(id, patch) { const { error } = await supabase.from("profiles").update(patch).eq("id", id); if (error) setError(error.message); else { setNotice("User profile updated."); await writeAudit("User Management", id, "update", patch); await loadModuleData(); } }
+  async function updateProfile(id, patch) { if (!window.confirm("Save changes to this user profile?")) { setNotice("No changes made."); return; } const { error } = await supabase.from("profiles").update(patch).eq("id", id); if (error) setError(error.message); else { setNotice("User profile updated."); await writeAudit("User Management", id, "update", patch); await loadModuleData(); } }
 
   const filteredActivities = activities.filter(a => [labelEquipment(equipment,a.equipment_id), labelComponent(equipment,components,a.component_id), a.activity_type, a.technician_name, a.sap_notification_no, a.remarks].join(" ").toLowerCase().includes(activitySearch.toLowerCase()));
   const filteredOils = oils.filter(o => [o.sample_id, labelEquipment(equipment,o.equipment_id), labelComponent(equipment,components,o.component_id), o.laboratory, o.status, o.recommendation].join(" ").toLowerCase().includes(oilSearch.toLowerCase()));
@@ -376,5 +378,6 @@ export default function RemainingModules({ page, equipment, components, lubrican
 
   return null;
 }
+
 
 

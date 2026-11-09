@@ -132,6 +132,15 @@ function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    const message = error || notice;
+    if (!message) { setToast(null); return undefined; }
+    setToast({ type: error ? "error" : "success", message });
+    const timer = window.setTimeout(() => setToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [error, notice]);
 
   // Fetch every equipment row in pages because Supabase commonly limits each response to 1,000 rows.
   async function fetchAllEquipment() {
@@ -220,7 +229,7 @@ function Dashboard() {
   function updateForm(e) { const { name, value } = e.target; setForm((p) => ({ ...p, [name]: value, ...(name === "plant_id" ? { area_id: "" } : {}) })); }
 
   async function saveEquipment(e) {
-    e.preventDefault(); setSaving(true); clearMessages();
+    e.preventDefault(); if (editingId && !window.confirm("Save changes to this equipment record?")) { clearMessages(); setNotice("No changes made."); return; } setSaving(true); clearMessages();
     try {
       const payload = { sap_equipment_no: form.sap_equipment_no.trim(), description: form.description.trim(), plant_id: form.plant_id, area_id: form.area_id || null, functional_location: form.functional_location.trim() || null, equipment_type: form.equipment_type.trim() || null, status: form.status, lubrication_criticality: form.lubrication_criticality, lubrication_notes: form.lubrication_notes.trim() || null };
       if (!payload.sap_equipment_no || !payload.description || !payload.plant_id) throw new Error("SAP Equipment #, Description and Plant are required.");
@@ -282,14 +291,14 @@ function Dashboard() {
   function updateComponentForm(e) { const { name, value } = e.target; setComponentForm((p) => ({ ...p, [name]: value })); }
   function startNewComponent() { setComponentForm(emptyComponentForm); setEditingComponentId(null); clearMessages(); setShowComponentForm(true); }
   function editComponent(item) { setComponentForm({ equipment_id: item.equipment_id || "", component_name: item.component_name || "", component_type: item.component_type || "", description: item.description || "", criticality: item.criticality || "medium", status: item.status || "active", remarks: item.remarks || "" }); setEditingComponentId(item.id); clearMessages(); setShowComponentForm(true); }
-  async function saveComponent(e) { e.preventDefault(); setSavingComponent(true); clearMessages(); try { const payload = { equipment_id: componentForm.equipment_id, component_name: componentForm.component_name.trim(), component_type: componentForm.component_type.trim() || null, description: componentForm.description.trim() || null, criticality: componentForm.criticality, status: componentForm.status, remarks: componentForm.remarks.trim() || null }; if (!payload.equipment_id || !payload.component_name) throw new Error("Equipment and Component Name are required."); const result = editingComponentId ? await supabase.from("components").update(payload).eq("id", editingComponentId) : await supabase.from("components").insert(payload); if (result.error) throw new Error(result.error.message); setNotice(editingComponentId ? "Component updated successfully." : "Component saved successfully."); setShowComponentForm(false); setEditingComponentId(null); setComponentForm(emptyComponentForm); await loadData(); } catch (e) { setError(e.message); } finally { setSavingComponent(false); } }
+  async function saveComponent(e) { e.preventDefault(); if (editingComponentId && !window.confirm("Save changes to this component?")) { clearMessages(); setNotice("No changes made."); return; } setSavingComponent(true); clearMessages(); try { const payload = { equipment_id: componentForm.equipment_id, component_name: componentForm.component_name.trim(), component_type: componentForm.component_type.trim() || null, description: componentForm.description.trim() || null, criticality: componentForm.criticality, status: componentForm.status, remarks: componentForm.remarks.trim() || null }; if (!payload.equipment_id || !payload.component_name) throw new Error("Equipment and Component Name are required."); const result = editingComponentId ? await supabase.from("components").update(payload).eq("id", editingComponentId) : await supabase.from("components").insert(payload); if (result.error) throw new Error(result.error.message); setNotice(editingComponentId ? "Component updated successfully." : "Component saved successfully."); setShowComponentForm(false); setEditingComponentId(null); setComponentForm(emptyComponentForm); await loadData(); } catch (e) { setError(e.message); } finally { setSavingComponent(false); } }
   async function deactivateComponent(item) { if (!window.confirm(`Mark "${item.component_name}" as inactive?`)) return; setDeactivatingComponentId(item.id); clearMessages(); try { const { error } = await supabase.from("components").update({ status: "inactive" }).eq("id", item.id); if (error) throw new Error(error.message); setNotice("Component marked inactive."); await loadData(); } catch (e) { setError(e.message); } finally { setDeactivatingComponentId(null); } }
 
   function updateRequirementForm(e) { const { name, value } = e.target; setRequirementForm((p) => ({ ...p, [name]: value, ...(name === "frequency_basis" ? { interval_hours: value === "calendar" ? "" : p.interval_hours, interval_days: value === "running_hours" ? "" : p.interval_days } : {}) })); }
   function startNewRequirement() { setRequirementForm(emptyRequirementForm); setEditingRequirementId(null); clearMessages(); setShowRequirementForm(true); }
   function editRequirement(item) { setRequirementForm({ component_id: item.component_id || "", lubricant_id: item.lubricant_id || "", activity_name: item.method || "Oil level check", frequency_basis: item.frequency_basis || "either", interval_hours: item.interval_hours ?? "", interval_days: item.interval_days ?? "", quantity: item.quantity ?? "", quantity_unit: item.quantity_unit || "L", method: item.method || "", source_reference: item.source_reference || "", revision: item.revision || "", effective_from: item.effective_from || "", approval_status: item.approval_status || "draft", instructions: item.instructions || "" }); setEditingRequirementId(item.id); clearMessages(); setShowRequirementForm(true); }
   async function saveRequirement(e) {
-    e.preventDefault(); setSavingRequirement(true); clearMessages();
+    e.preventDefault(); if (editingRequirementId && !window.confirm("Save changes to this lubrication requirement?")) { clearMessages(); setNotice("No changes made."); return; } setSavingRequirement(true); clearMessages();
     try {
       if (!requirementForm.component_id) throw new Error("Please select a component.");
       const intervalDays = requirementForm.frequency_basis === "running_hours" ? null : Number(requirementForm.interval_days);
@@ -306,7 +315,7 @@ function Dashboard() {
   function updateLubricantForm(e) { const { name, value } = e.target; setLubricantForm((p) => ({ ...p, [name]: value })); }
   function startNewLubricant() { setLubricantForm(emptyLubricantForm); setEditingLubricantId(null); clearMessages(); setShowLubricantForm(true); }
   function editLubricant(item) { setLubricantForm({ product_code: item.product_code || "", product_name: item.product_name || "", manufacturer: item.manufacturer || "", lubricant_type: item.lubricant_type || "Oil", grade: item.grade || "", base_oil: item.base_oil || "", thickener: item.thickener || "", nlgi_grade: item.nlgi_grade || "", description: item.description || "", status: item.status || "active" }); setEditingLubricantId(item.id); clearMessages(); setShowLubricantForm(true); }
-  async function saveLubricant(e) { e.preventDefault(); setSavingLubricant(true); clearMessages(); try { const payload = { product_code: lubricantForm.product_code.trim() || null, product_name: lubricantForm.product_name.trim(), manufacturer: lubricantForm.manufacturer.trim() || null, lubricant_type: lubricantForm.lubricant_type.trim() || null, grade: lubricantForm.grade.trim() || null, base_oil: lubricantForm.base_oil.trim() || null, thickener: lubricantForm.thickener.trim() || null, nlgi_grade: lubricantForm.nlgi_grade.trim() || null, description: lubricantForm.description.trim() || null, status: lubricantForm.status, updated_at: new Date().toISOString() }; if (!payload.product_name) throw new Error("Product name is required."); const result = editingLubricantId ? await supabase.from("lubricants").update(payload).eq("id", editingLubricantId) : await supabase.from("lubricants").insert(payload); if (result.error) throw new Error(result.error.message); setNotice(editingLubricantId ? "Lubricant updated successfully." : "Lubricant saved successfully."); setShowLubricantForm(false); setEditingLubricantId(null); setLubricantForm(emptyLubricantForm); await loadData(); } catch (e) { setError(e.message); } finally { setSavingLubricant(false); } }
+  async function saveLubricant(e) { e.preventDefault(); if (editingLubricantId && !window.confirm("Save changes to this lubricant?")) { clearMessages(); setNotice("No changes made."); return; } setSavingLubricant(true); clearMessages(); try { const payload = { product_code: lubricantForm.product_code.trim() || null, product_name: lubricantForm.product_name.trim(), manufacturer: lubricantForm.manufacturer.trim() || null, lubricant_type: lubricantForm.lubricant_type.trim() || null, grade: lubricantForm.grade.trim() || null, base_oil: lubricantForm.base_oil.trim() || null, thickener: lubricantForm.thickener.trim() || null, nlgi_grade: lubricantForm.nlgi_grade.trim() || null, description: lubricantForm.description.trim() || null, status: lubricantForm.status, updated_at: new Date().toISOString() }; if (!payload.product_name) throw new Error("Product name is required."); const result = editingLubricantId ? await supabase.from("lubricants").update(payload).eq("id", editingLubricantId) : await supabase.from("lubricants").insert(payload); if (result.error) throw new Error(result.error.message); setNotice(editingLubricantId ? "Lubricant updated successfully." : "Lubricant saved successfully."); setShowLubricantForm(false); setEditingLubricantId(null); setLubricantForm(emptyLubricantForm); await loadData(); } catch (e) { setError(e.message); } finally { setSavingLubricant(false); } }
   async function deactivateLubricant(item) { if (!window.confirm(`Mark "${item.product_name}" as inactive?`)) return; setDeactivatingLubricantId(item.id); clearMessages(); try { const { error } = await supabase.from("lubricants").update({ status: "inactive", updated_at: new Date().toISOString() }).eq("id", item.id); if (error) throw new Error(error.message); setNotice("Lubricant marked inactive."); await loadData(); } catch (e) { setError(e.message); } finally { setDeactivatingLubricantId(null); } }
 
   function getEquipmentLabel(id) { const x = equipment.find((e) => e.id === id); return x ? `${x.sap_equipment_no} — ${x.description}` : "Equipment not found"; }
@@ -320,6 +329,7 @@ function Dashboard() {
 
   return (
     <div className="app-shell">
+      {toast && <ToastNotice type={toast.type} message={toast.message} onClose={() => setToast(null)}/>}
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">L</div><div><strong>LUBRICATION</strong><span>RELIABILITY SYSTEM</span></div></div>
         <div className="plant-selector"><div className="plant-icon"><Icon name="equipment" size={19}/></div><div><small>PLANT WORKSPACE</small><strong>Plant Overview</strong></div><Icon name="chevron" size={16}/></div>
@@ -339,8 +349,8 @@ function Dashboard() {
             {activePage === "Lubrication Requirements" && <button className="primary-button" onClick={startNewRequirement}><Icon name="plus" size={17}/> Add requirement</button>}
           </div></div>
 
-          {error && <div className="alert alert-error"><Icon name="info"/><div><strong>Action needs attention</strong><span>{error}</span></div><button onClick={() => setError("")}><Icon name="close" size={16}/></button></div>}
-          {notice && <div className="alert alert-success"><div className="success-mark">✓</div><div><strong>Saved successfully</strong><span>{notice}</span></div><button onClick={() => setNotice("")}><Icon name="close" size={16}/></button></div>}
+          
+          
 
           {activePage === "Dashboard" && <DashboardHome equipment={equipment} totalEquipmentCount={totalEquipmentCount} activeEquipmentCount={activeEquipmentCount} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} loading={loading} go={go} openEquipmentForm={openEquipmentForm} />}
 
@@ -548,7 +558,13 @@ function DashboardHome({ equipment, totalEquipmentCount, activeEquipmentCount, c
   </>;
 }
 function DashboardEmpty({ title, text }) { return <div className="dashboard-empty"><strong>{title}</strong><span>{text}</span></div>; }
-function Kpi({ icon, label, value, detail, tone }) { return <div className="kpi-card"><div className={`kpi-icon ${tone}`}><Icon name={icon}/></div><div className="kpi-label">{label}</div><div className="kpi-value">{value}</div><div className="kpi-detail">{detail}</div></div>; }
+function ToastNotice({ type, message, onClose }) {
+  return <div className={"app-toast " + type} role={type === "error" ? "alert" : "status"} aria-live={type === "error" ? "assertive" : "polite"}>
+    <span className="app-toast-icon">{type === "error" ? "!" : "✓"}</span>
+    <span className="app-toast-message">{message}</span>
+    <button type="button" onClick={onClose} aria-label="Dismiss notification">×</button>
+  </div>;
+}function Kpi({ icon, label, value, detail, tone }) { return <div className="kpi-card"><div className={`kpi-icon ${tone}`}><Icon name={icon}/></div><div className="kpi-label">{label}</div><div className="kpi-value">{value}</div><div className="kpi-detail">{detail}</div></div>; }
 function ProgressRow({ label, value, hint, alert }) { return <div className="progress-row"><div className="progress-top"><strong>{label}</strong><b className={alert ? "text-danger" : ""}>{value}</b></div><div className="progress-track"><span style={{ width: `${Math.min(100, value > 0 ? 100 : 0)}%` }}/></div><small>{hint}</small></div>; }
 function FormCard({ title, subtitle, onClose, children }) { return <section className="form-card"><div className="form-card-head"><div><div className="card-kicker">DATA ENTRY</div><h2>{title}</h2><p>{subtitle}</p></div>{onClose && <button className="close-button" type="button" onClick={onClose}><Icon name="close" size={18}/></button>}</div>{children}</section>; }
 function FormSection({ title, hint, children }) { return <div className="form-section"><div className="form-section-head"><div><h3>{title}</h3><span>{hint}</span></div></div>{children}</div>; }
@@ -568,6 +584,7 @@ function Empty({ icon, title, text, action }) { return <div className="empty-sta
 function Placeholder({ page, go }) { return <section className="placeholder"><div className="placeholder-icon"><Icon name={page === "Alerts" ? "bell" : page === "Running Hours" ? "clock" : page === "Reports" ? "report" : "settings"} size={30}/></div><div className="card-kicker">MODULE</div><h2>{page}</h2><p>This workspace is reserved for the next implementation stage. The modern shell, navigation, data-entry pattern and database-backed master-data modules are ready for expansion here.</p>{page === "Running Hours" && <button className="secondary-button" onClick={() => go("Equipment Relationships")}>Review equipment relationships</button>}</section>; }
 
 export default Dashboard;
+
 
 
 

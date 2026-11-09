@@ -74,3 +74,14 @@
 .child-picker-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid #d8e4f4;border-radius:15px;background:#f2f7ff;color:#315c96;font-size:9px;font-weight:700}
 .child-picker-chip button{border:0;background:transparent;color:#637b98;font-size:14px;line-height:1;padding:0 1px}
 @media(max-width:800px){.child-picker-menu{min-width:0}.relationship-multi-select{min-width:0}}
+
+
+/* Shared action feedback toast */
+.app-toast{position:fixed;right:24px;bottom:24px;z-index:1000;display:flex;align-items:center;gap:11px;width:max-content;max-width:min(440px,calc(100vw - 32px));padding:13px 14px;border:1px solid #cde8d9;border-radius:11px;background:#f3fbf6;color:#205d40;box-shadow:0 14px 38px rgba(21,43,74,.2);font-size:12px;line-height:1.5;animation:app-toast-in .18s ease-out}
+.app-toast.error{border-color:#f0d0d0;background:#fff6f6;color:#8e3030}
+.app-toast-icon{width:22px;height:22px;display:grid;place-items:center;flex:none;border-radius:50%;background:#dff3e7;font-weight:800}
+.app-toast.error .app-toast-icon{background:#f8dddd}
+.app-toast-message{overflow-wrap:anywhere}
+.app-toast button{margin-left:auto;border:0;background:transparent;color:inherit;font-size:18px;line-height:1;padding:0 2px}
+@keyframes app-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:520px){.app-toast{right:12px;bottom:12px;max-width:calc(100vw - 24px)}}
