@@ -9,6 +9,9 @@ const today = new Date();
 const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
 const todayText = today.toISOString().slice(0, 10);
 const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function ModulePanel({ title, subtitle, children }) {
+  return <section className="module-panel"><div className="module-panel-head"><div><h2>{title}</h2><p>{subtitle}</p></div></div>{children}</section>;
+}
 
 export default function LubricationReport({ activities, oils, scheduleRows, inventory, equipment, components, lubricants, labelEquipment, labelComponent, labelLubricant, fmtDate, number }) {
   const [from, setFrom] = useState(monthStart);
