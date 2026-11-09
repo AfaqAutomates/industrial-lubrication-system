@@ -53,7 +53,7 @@ export default function App() {
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("full_name, role, is_active")
+        .select("full_name, role, is_active, module_permissions")
         .eq("id", session.user.id)
         .single();
 
@@ -66,7 +66,7 @@ export default function App() {
         );
       } else {
         setProfile(data);
-        if (!data.is_active || data.role !== "master_admin") {
+        if (!data.is_active || !data.role) {
           setNotice(
             "Your account does not have application access enabled yet."
           );
@@ -121,17 +121,13 @@ export default function App() {
     );
   }
 
-  if (
-    session &&
-    profile?.is_active &&
-    profile?.role === "master_admin"
-  ) {
+  if (session && profile?.is_active && profile?.role) {
     return (
       <div className="authenticated-app">
         <header className="auth-topbar">
           <div>
             <strong>{profile.full_name || "Administrator"}</strong>
-            <span>Master Administrator</span>
+            <span>{profile.role === "master_admin" ? "Master Administrator" : "Authorized User"}</span>
           </div>
           <button
             className="auth-logout"
@@ -141,7 +137,7 @@ export default function App() {
             Sign out
           </button>
         </header>
-        <Dashboard />
+        <Dashboard profile={profile} />
       </div>
     );
   }

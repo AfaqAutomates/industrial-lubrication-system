@@ -79,7 +79,7 @@ function Icon({ name, size = 18 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.grid}</svg>;
 }
 
-function Dashboard() {
+function Dashboard({ profile }) {
   const [activePage, setActivePage] = useState("Dashboard");
   const [plants, setPlants] = useState([]);
   const [areas, setAreas] = useState([]);
@@ -245,7 +245,14 @@ function Dashboard() {
   const componentTypeSuggestions = useMemo(() => [...new Set(components.map((x) => x.component_type).filter(Boolean))].sort(), [components]);
 
   function clearMessages() { setError(""); setNotice(""); }
-  function go(page) { setActivePage(page); setMobileNavOpen(false); clearMessages(); setSearch(""); setStatusFilter("all"); }
+  const isMasterAdmin = profile?.role === "master_admin";
+  const permittedPages = navigation.flatMap(group => group.items).filter(page => page === "User Management" ? isMasterAdmin : isMasterAdmin || profile?.module_permissions?.[page] === true);
+  const visibleNavigation = navigation.map(group => ({ ...group, items: group.items.filter(item => permittedPages.includes(item)) })).filter(group => group.items.length > 0);
+  useEffect(() => {
+    if (permittedPages.length && !permittedPages.includes(activePage)) setActivePage(permittedPages[0]);
+    else if (!permittedPages.length && activePage !== "No access") setActivePage("No access");
+  }, [activePage, profile, permittedPages.length]);
+  function go(page) { if (!permittedPages.includes(page)) return; setActivePage(page); setMobileNavOpen(false); clearMessages(); setSearch(""); setStatusFilter("all"); }
   function updateForm(e) { const { name, value } = e.target; setForm((p) => ({ ...p, [name]: value, ...(name === "plant_id" ? { area_id: "" } : {}) })); }
 
   async function saveEquipment(e) {
@@ -348,6 +355,8 @@ function Dashboard() {
   const workspaceBusy = loading || saving || savingRelationship || savingComponent || savingRequirement || savingLubricant || deactivatingId !== null || deactivatingRelationshipId !== null || deactivatingComponentId !== null || deactivatingRequirementId !== null || deactivatingLubricantId !== null;
   const meta = pageMeta[activePage] || ["Workspace", `Your ${activePage.toLowerCase()} workspace.`];
 
+  if (!permittedPages.includes(activePage)) return <div className="access-restricted"><div className="access-restricted-card"><div className="card-kicker">MODULE ACCESS</div><h1>{permittedPages.length ? "Opening your workspace…" : "No modules assigned"}</h1><p>{permittedPages.length ? "Your permitted page is loading." : "Ask your administrator to grant access to the modules you need."}</p></div></div>;
+
   return (
     <div className="app-shell" aria-busy={workspaceBusy}>
       {mobileNavOpen && <button type="button" className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}/>}
@@ -357,13 +366,13 @@ function Dashboard() {
         <div className="brand"><div className="brand-mark">L</div><div><strong>LUBRICATION</strong><span>RELIABILITY SYSTEM</span></div></div>
         <div className="plant-selector"><div className="plant-icon"><Icon name="equipment" size={19}/></div><div><small>PLANT WORKSPACE</small><strong>Plant Overview</strong></div><Icon name="chevron" size={16}/></div>
         <nav className="navigation" id="app-navigation">
-          {navigation.map((group) => <div className="nav-group" key={group.section}><div className="nav-heading">{group.section}</div>{group.items.map((item) => <button key={item} className={`nav-item ${activePage === item ? "selected" : ""}`} onClick={() => go(item)}><span className="nav-icon"><Icon name={pageIcon(item)} size={16}/></span><span>{item}</span>{item === "Alerts" && <span className="nav-count">!</span>}</button>)}</div>)}
+          {visibleNavigation.map((group) => <div className="nav-group" key={group.section}><div className="nav-heading">{group.section}</div>{group.items.map((item) => <button key={item} className={`nav-item ${activePage === item ? "selected" : ""}`} onClick={() => go(item)}><span className="nav-icon"><Icon name={pageIcon(item)} size={16}/></span><span>{item}</span>{item === "Alerts" && <span className="nav-count">!</span>}</button>)}</div>)}
         </nav>
         <div className="sidebar-footer"><span className="connection-dot"/><div><strong>Supabase connected</strong><span>Database-backed workspace</span></div></div>
       </aside>
 
       <main className="main-content">
-        <header className="topbar"><button type="button" className="mobile-menu-toggle" aria-label="Open navigation menu" aria-controls="app-navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}><span className="mobile-menu-lines" aria-hidden="true"><i/><i/><i/></span></button><div className="breadcrumb"><span>Lubrication System</span><span>/</span><strong>{activePage}</strong></div><div className="topbar-right"><span className="environment-label"><i/> LIVE DATABASE</span><div className="avatar">A</div><div className="user-label"><strong>Administrator</strong><span>Master admin workspace</span></div></div></header>
+        <header className="topbar"><button type="button" className="mobile-menu-toggle" aria-label="Open navigation menu" aria-controls="app-navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}><span className="mobile-menu-lines" aria-hidden="true"><i/><i/><i/></span></button><div className="breadcrumb"><span>Lubrication System</span><span>/</span><strong>{activePage}</strong></div><div className="topbar-right"><span className="environment-label"><i/> LIVE DATABASE</span><div className="avatar">{String(profile?.full_name || profile?.role || "U").slice(0,1).toUpperCase()}</div><div className="user-label"><strong>{profile?.full_name || "User"}</strong><span>{isMasterAdmin ? "Master admin workspace" : "Assigned workspace"}</span></div></div></header>
         <section className="page-content">
           <div className="page-heading"><div><div className="eyebrow">{meta[0].toUpperCase()}</div><h1>{activePage}</h1><p className="subtitle">{meta[1]}</p></div><div className="heading-actions">
             {activePage === "Equipment" && <button className="primary-button" onClick={openEquipmentForm}><Icon name="plus" size={17}/> Add equipment</button>}
@@ -424,7 +433,7 @@ function Dashboard() {
             </DataPanel>
           </>}
 
-          {["Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Inventory", "Reports", "Alerts", "User Management", "Settings", "Audit History"].includes(activePage) && <RemainingModules page={activePage} equipment={equipment} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} refresh={loadData} setNotice={setNotice} setError={setError}/>}          
+          {["Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Inventory", "Reports", "Alerts", "User Management", "Settings", "Audit History"].includes(activePage) && <RemainingModules page={activePage} profile={profile} equipment={equipment} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} refresh={loadData} setNotice={setNotice} setError={setError}/>}          
           <footer className="page-footer"><span>Industrial Lubrication Management & Reliability System</span><span>Plant workspace • Supabase connected</span></footer>
         </section>
       </main>

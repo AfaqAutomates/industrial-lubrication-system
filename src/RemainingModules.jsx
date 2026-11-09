@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "./lib/supabase";
 import OilReportIntake from "./OilReportIntake";
 import LubricationReport from "./LubricationReport";
+import UserAccessManager from "./UserAccessManager";
 
 const emptyActivity = {
   equipment_id: "", component_id: "", requirement_id: "", activity_type: "lubrication",
@@ -39,7 +40,7 @@ function ModulePanel({ title, subtitle, action, children }) { return <section cl
 function ModuleForm({ title, subtitle, onClose, children, onSubmit, saving, saveText = "Save" }) { return <section className="module-form"><div className="module-form-head"><div><div className="card-kicker">DATA ENTRY</div><h2>{title}</h2><p>{subtitle}</p></div><button type="button" className="close-button" onClick={onClose}>×</button></div><form onSubmit={onSubmit}>{children}<div className="module-form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Saving..." : saveText}</button></div></form></section>; }
 function MField({ label, full, children }) { return <label className={`field ${full ? "full" : ""}`}><span>{label}</span>{children}</label>; }
 
-export default function RemainingModules({ page, equipment, components, lubricants, requirements, relationships, refresh, setNotice, setError }) {
+export default function RemainingModules({ page, profile, equipment, components, lubricants, requirements, relationships, refresh, setNotice, setError }) {
   const [runningRows, setRunningRows] = useState([]);
   const [imports, setImports] = useState([]);
   const [activities, setActivities] = useState([]);
@@ -100,7 +101,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
           supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }),
           supabase.from("lubricant_inventory_transactions").select("*").order("transaction_date", { ascending: false }).limit(1000),
           supabase.from("system_alerts").select("*").order("created_at", { ascending: false }).limit(500),
-          supabase.from("profiles").select("id,email,full_name,is_admin").order("full_name"),
+          profile?.role === "master_admin" ? supabase.from("profiles").select("id,email,full_name,role,is_active,module_permissions").order("full_name") : Promise.resolve({ data: [], error: null }),
           supabase.from("system_settings").select("*").order("setting_key"),
           supabase.from("procurement_records").select("*").order("delivery_expected", { ascending: true }).limit(500),
         ]);
@@ -292,15 +293,30 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     } catch (e) { setError(e.message); }
     finally { setSaving(false); }
   }
-  async function updateProfile(id, patch) {
-    if (saving || moduleLoading) return;
-    if (!window.confirm("Save changes to this user profile?")) { setNotice("No changes made."); return; }
+  async function saveUserPermissions(id, permissions) {
+    if (saving || moduleLoading || profile?.role !== "master_admin") return;
+    if (!window.confirm("Save the module access changes for this account?")) { setNotice("No changes made."); return; }
     setSaving(true);
     try {
-      const { error } = await supabase.from("profiles").update(patch).eq("id", id);
+      const { error } = await supabase.rpc("set_user_module_permissions", { target_profile_id: id, requested_permissions: permissions });
       if (error) throw new Error(error.message);
-      setNotice("User profile updated.");
-      await writeAudit("User Management", id, "update", patch);
+      setNotice("Module access updated.");
+      await writeAudit("User Management", id, "update", { module_permissions: permissions });
+      await loadModuleData();
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  }
+  async function toggleUserActive(id, active) {
+    if (saving || moduleLoading || profile?.role !== "master_admin") return;
+    const user = profiles.find((item) => item.id === id);
+    const action = active ? "enable this account's login" : "disable this account's login";
+    if (!window.confirm(`Are you sure you want to ${action}${user?.email ? ` for ${user.email}` : ""}?`)) { setNotice("No changes made."); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.rpc("set_user_account_active", { target_profile_id: id, account_active: active });
+      if (error) throw new Error(error.message);
+      setNotice(active ? "Account login enabled." : "Account login disabled.");
+      await writeAudit("User Management", id, active ? "enable_login" : "disable_login", { is_active: active });
       await loadModuleData();
     } catch (e) { setError(e.message); }
     finally { setSaving(false); }
@@ -428,7 +444,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
 
   if (page === "Reports") return <LubricationReport activities={activities} oils={oils} scheduleRows={scheduleRows} inventory={inventory} equipment={equipment} components={components} lubricants={lubricants} labelEquipment={labelEquipment} labelComponent={labelComponent} labelLubricant={labelLubricant} fmtDate={fmtDate} number={number}/>;
 
-  if (page === "User Management") return <ModulePanel title="Controlled users" subtitle="Users are still created manually through Supabase Auth. This screen manages their application profile fields; it does not expose a service-role key in the browser."><div className="info-banner"><div className="banner-icon">i</div><div><strong>Security boundary</strong><p>Create authentication users in Supabase. Use this portal only for profile/role metadata and application permissions.</p></div></div><div className="table-wrap"><table><thead><tr><th>EMAIL</th><th>FULL NAME</th><th>ADMIN</th><th>ACTION</th></tr></thead><tbody>{profiles.map(p=><tr key={p.id}><td>{p.email || "—"}</td><td><input className="inline-input" value={p.full_name || ""} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,full_name:e.target.value}:x))}/></td><td><input type="checkbox" checked={!!p.is_admin} onChange={e=>setProfiles(ps=>ps.map(x=>x.id===p.id?{...x,is_admin:e.target.checked}:x))}/></td><td><button className="table-action" onClick={()=>{const x=profiles.find(y=>y.id===p.id); updateProfile(p.id,{full_name:x.full_name,is_admin:x.is_admin});}} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save profile"}</button></td></tr>)}</tbody></table></div></ModulePanel>;
+  if (page === "User Management") return profile?.role === "master_admin" ? <UserAccessManager profiles={profiles} saving={saving} moduleLoading={moduleLoading} onSave={saveUserPermissions} onToggleActive={toggleUserActive}/> : <div className="module-empty"><strong>Administrator access required</strong><p>This area is only available to master administrators.</p></div>;
 
   if (page === "Settings") return <><ModulePanel title="System configuration" subtitle="Admin-controlled settings that influence thresholds and application behavior."><div className="settings-grid">{["due_soon_days","running_hours_due_soon","default_quantity_unit","low_stock_alert_enabled","oil_analysis_alerts_enabled"].map(key=>{const s=settings.find(x=>x.setting_key===key); const value=settingDraft[key] ?? s?.setting_value ?? ""; return <div className="setting-card" key={key}><div><strong>{key.replaceAll("_"," ")}</strong><small>Application setting</small></div><input value={value} onChange={e=>setSettingDraft({...settingDraft,[key]:e.target.value})}/><button className="secondary-button" onClick={()=>saveSetting(key)} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save"}</button></div>;})}</div></ModulePanel><ModulePanel title="Configuration notes" subtitle="Keep engineering thresholds configurable rather than hard-coded."><div className="module-empty"><p>Oil-analysis limits, running-hour due-soon windows, stock thresholds and alert behavior should be controlled here or in their respective master-data screens.</p></div></ModulePanel></>;
 
