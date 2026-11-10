@@ -4,6 +4,7 @@ import { supabase } from "./lib/supabase";
 import OilReportIntake from "./OilReportIntake";
 import LubricationReport from "./LubricationReport";
 import UserAccessManager from "./UserAccessManager";
+import SearchableSelect from "./SearchableSelect";
 
 const emptyActivity = {
   equipment_id: "", component_id: "", requirement_id: "", activity_type: "lubrication",
@@ -43,8 +44,9 @@ function MField({ label, full, children }) { return <label className={`field ${f
 export default function RemainingModules({ page, profile, canEdit, equipment, components, lubricants, requirements, relationships, refresh, setNotice, setError }) {
   const [runningRows, setRunningRows] = useState([]);
   const [imports, setImports] = useState([]);
+  const [resourceMappings, setResourceMappings] = useState([]);
   const [activities, setActivities] = useState([]);
-  const [activityLookups, setActivityLookups] = useState(null);
+  const [moduleLookups, setModuleLookups] = useState(null);
   const [oils, setOils] = useState([]);
   const [inventory, setInventory] = useState([]);
   const [inventoryTx, setInventoryTx] = useState([]);
@@ -72,6 +74,7 @@ export default function RemainingModules({ page, profile, canEdit, equipment, co
   const [inventorySearch, setInventorySearch] = useState("");
   const [runningImport, setRunningImport] = useState(null);
   const [runningMapping, setRunningMapping] = useState({ equipment: "", hours: "", date: "" });
+  const [resourceSelections, setResourceSelections] = useState({});
   const [runningPreview, setRunningPreview] = useState([]);
   const [runningFileName, setRunningFileName] = useState("");
   const [settingDraft, setSettingDraft] = useState({});
@@ -98,8 +101,9 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         const canRead = (module) => admin || profile?.module_permissions?.[module] === true || ["view", "edit"].includes(profile?.module_permissions?.[module]);
         const needsAny = (modules) => admin || modules.some(canRead);
         const emptyResult = () => Promise.resolve({ data: [], error: null });
-        const lookupRequest = page === "Activities" && canRead("Activities") ? supabase.rpc("get_activity_entry_lookups") : Promise.resolve({ data: null, error: null });
-        const [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups] = await Promise.all([
+        const lookupRequest = ["Activities", "Oil Analysis", "Running Hours"].includes(page) && canRead(page) ? supabase.rpc("get_module_reference_lookups") : Promise.resolve({ data: null, error: null });
+        const resourceMapRequest = page === "Running Hours" && canRead("Running Hours") ? supabase.from("cooispi_resource_mappings").select("id,resource_reference,resource_reference_key,equipment_id").order("resource_reference") : emptyResult();
+        const [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult] = await Promise.all([
           needsAny(["Running Hours", "Work Schedule", "Reports", "Alerts"]) ? supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000) : emptyResult(),
           needsAny(["Running Hours", "Reports"]) ? supabase.from("running_hours_imports").select("*").order("imported_at", { ascending: false }).limit(50) : emptyResult(),
           needsAny(["Activities", "Work Schedule", "Reports", "Alerts"]) ? supabase.from("lubrication_activities").select("*").order("activity_date", { ascending: false }).limit(1000) : emptyResult(),
@@ -111,18 +115,20 @@ function ModuleLoadingState({ title, detail, onRetry }) {
           canRead("Settings") ? supabase.from("system_settings").select("*").order("setting_key") : emptyResult(),
           needsAny(["Inventory", "Reports"]) ? supabase.from("procurement_records").select("*").order("delivery_expected", { ascending: true }).limit(500) : emptyResult(),
           lookupRequest,
+          resourceMapRequest,
         ]);
-        const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups].find((result) => result.error)?.error;
+        const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult].find((result) => result.error)?.error;
         if (first) throw new Error(first.message);
         setRunningRows(rh.data || []);
         setImports(imp.data || []);
+        if (page === "Running Hours") setResourceMappings(resourceMapResult.data || []);
         setActivities(act.data || []);
         setOils(oa.data || []);
         setInventory(inv.data || []);
         setInventoryTx(tx.data || []);
         setAlerts(al.data || []);
         setProfiles(pf.data || []);
-        if (page === "Activities") setActivityLookups(lookups.data || { equipment: [], components: [], lubricants: [], requirements: [] });
+        if (["Activities", "Oil Analysis", "Running Hours"].includes(page)) setModuleLookups(lookups.data || { equipment: [], components: [], lubricants: [], requirements: [] });
         setSettings(st.data || []);
         setProcurement(pr.data || []);
         setLoaded(true);
@@ -195,7 +201,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
   }, [scheduleRows, inventory, oils, alerts, lubricants, equipment]);
 
   async function saveActivity(e) {
-    e.preventDefault(); setSaving(true); setError("");
+    e.preventDefault(); if (!activityForm.equipment_id) return setError("Select an equipment record before saving the activity."); setSaving(true); setError("");
     try {
       const payload = { ...activityForm, equipment_id: activityForm.equipment_id, component_id: activityForm.component_id || null, requirement_id: activityForm.requirement_id || null, lubricant_id: activityForm.lubricant_id || null, running_hours: activityForm.running_hours === "" ? null : number(activityForm.running_hours), quantity: activityForm.quantity === "" ? null : number(activityForm.quantity) };
       const { error } = await supabase.from("lubrication_activities").insert(payload); if (error) throw new Error(error.message);
@@ -203,7 +209,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     } catch (e2) { setError(e2.message); } finally { setSaving(false); }
   }
   async function saveOil(e) {
-    e.preventDefault(); setSaving(true); setError("");
+    e.preventDefault(); if (!oilForm.equipment_id) return setError("Select an equipment record before saving the oil-analysis sample."); setSaving(true); setError("");
     let attachmentPath = null;
     try {
       const payload = { ...oilForm, equipment_id: oilForm.equipment_id, component_id: oilForm.component_id || null, lubricant_id: oilForm.lubricant_id || null, running_hours: oilForm.running_hours === "" ? null : number(oilForm.running_hours), oil_hours: oilForm.oil_hours === "" ? null : number(oilForm.oil_hours) };
@@ -242,30 +248,37 @@ function ModuleLoadingState({ title, detail, onRetry }) {
   }
 
   function parseRunningFile(file) {
-    setRunningFileName(file.name); setRunningPreview([]); setRunningMapping({ equipment: "", hours: "", date: "" });
+    setRunningFileName(file.name); setRunningPreview([]); setRunningMapping({ equipment: "", hours: "", date: "" }); setResourceSelections({});
     const reader = new FileReader(); reader.onload = e => {
       try {
         const wb = XLSX.read(e.target.result, { type: "array" }); const sheet = wb.Sheets[wb.SheetNames[0]]; const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
         setRunningPreview(rows.slice(0, 10)); setRunningImport(rows);
         const keys = rows.length ? Object.keys(rows[0]) : [];
         const find = terms => keys.find(k => terms.some(t => k.toLowerCase().includes(t))) || "";
-        setRunningMapping({ equipment: find(["equipment", "equip", "aufnr", "sap"]), hours: find(["running hour", "run hour", "hours", "operating"]), date: find(["date", "period", "posting"]) });
+        setRunningMapping({ equipment: find(["resource reference", "resource", "work center", "equipment", "equip", "aufnr", "sap"]), hours: find(["running hour", "run hour", "hours", "operating"]), date: find(["date", "period", "posting"]) });
       } catch (e2) { setError(`Could not read Excel file: ${e2.message}`); }
     }; reader.readAsArrayBuffer(file);
   }
   async function importRunningHours() {
     if (!runningImport?.length) return setError("Choose an Excel file first.");
-    if (!runningMapping.equipment || !runningMapping.hours) return setError("Map SAP Equipment # and Running Hours before importing.");
+    if (!runningMapping.equipment || !runningMapping.hours) return setError("Map the COOISPI Resource Reference and Running Hours columns before importing.");
+    if (!sourceResourceReferences.length) return setError("The selected resource-reference column has no values to import.");
+    if (unmappedResourceReferences.length) return setError(`Match every resource reference to a SAP equipment record first (${unmappedResourceReferences.length} still need a match).`);
     setSaving(true); setError("");
     try {
+      const mappingRows = sourceResourceReferences.map((resource_reference) => ({ resource_reference, equipment_id: selectedEquipmentForReference(resource_reference), updated_at: new Date().toISOString() }));
+      if (mappingRows.length) {
+        const { error: mappingError } = await supabase.from("cooispi_resource_mappings").upsert(mappingRows, { onConflict: "resource_reference_key" });
+        if (mappingError) throw new Error(`Could not save COOISPI resource mappings: ${mappingError.message}`);
+      }
       const periodFrom = runningMapping.date ? runningImport.map(r => new Date(r[runningMapping.date])).filter(d => !Number.isNaN(d.getTime())).sort((a,b)=>a-b)[0] : new Date();
       const periodTo = runningMapping.date ? runningImport.map(r => new Date(r[runningMapping.date])).filter(d => !Number.isNaN(d.getTime())).sort((a,b)=>b-a)[0] : new Date();
       const { data: imp, error: impError } = await supabase.from("running_hours_imports").insert({ file_name: runningFileName, period_from: periodFrom?.toISOString().slice(0,10), period_to: periodTo?.toISOString().slice(0,10), total_rows: runningImport.length, import_status: "processing" }).select().single();
       if (impError) throw new Error(impError.message);
-      const bySap = new Map(equipment.map(x => [String(x.sap_equipment_no).trim().toLowerCase(), x]));
       const grouped = new Map(); let unmatched = 0;
-      runningImport.forEach((row, idx) => { const sap = String(row[runningMapping.equipment] ?? "").trim(); const eq = bySap.get(sap.toLowerCase()); const hours = number(row[runningMapping.hours]); if (!eq || !sap) { unmatched++; return; } const key = eq.id; grouped.set(key, (grouped.get(key) || 0) + hours); });
-      const records = [...grouped.entries()].map(([equipment_id, hours]) => ({ import_id: imp.id, equipment_id, sap_equipment_no: equipment.find(x => x.id === equipment_id)?.sap_equipment_no, period_from: periodFrom?.toISOString().slice(0,10), period_to: periodTo?.toISOString().slice(0,10), running_hours: hours, source_type: "sap_period", source_file: runningFileName }));
+      runningImport.forEach((row) => { const resource = String(row[runningMapping.equipment] ?? "").trim(); const equipmentId = selectedEquipmentForReference(resource); const hours = number(row[runningMapping.hours]); if (!equipmentId || !resource) { unmatched++; return; } grouped.set(equipmentId, (grouped.get(equipmentId) || 0) + hours); });
+      const equipmentById = new Map(resourceEquipment.map((item) => [item.id, item]));
+      const records = [...grouped.entries()].map(([equipment_id, hours]) => ({ import_id: imp.id, equipment_id, sap_equipment_no: equipmentById.get(equipment_id)?.sap_equipment_no || equipment.find(x => x.id === equipment_id)?.sap_equipment_no, period_from: periodFrom?.toISOString().slice(0,10), period_to: periodTo?.toISOString().slice(0,10), running_hours: hours, source_type: "sap_period", source_file: runningFileName }));
       if (records.length) { const { error } = await supabase.from("running_hours_records").upsert(records, { onConflict: "equipment_id,period_from,period_to" }); if (error) throw new Error(error.message); }
       const { error: updateError } = await supabase.from("running_hours_imports").update({ matched_rows: runningImport.length - unmatched, unmatched_rows: unmatched, import_status: "completed" }).eq("id", imp.id); if (updateError) throw new Error(updateError.message);
       setNotice(`Running-hours import completed: ${records.length} equipment matched, ${unmatched} rows unmatched.`); await writeAudit("Running Hours", imp.id, "import", { file_name: runningFileName, matched: records.length, unmatched }); setRunningImport(null); setRunningPreview([]); setRunningFileName(""); await loadModuleData();
@@ -329,10 +342,20 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     } catch (e) { setError(e.message); }
     finally { setSaving(false); }
   }
-  const activityEquipment = activityLookups?.equipment || equipment;
-  const activityComponents = activityLookups?.components || components;
-  const activityLubricants = activityLookups?.lubricants || lubricants;
-  const activityRequirements = activityLookups?.requirements || requirements;
+  const activityEquipment = moduleLookups?.equipment || equipment;
+  const activityComponents = moduleLookups?.components || components;
+  const activityLubricants = moduleLookups?.lubricants || lubricants;
+  const activityRequirements = moduleLookups?.requirements || requirements;
+  const resourceEquipment = moduleLookups?.equipment || equipment;
+  const normalizeResourceReference = (value) => String(value ?? "").trim().toLowerCase();
+  const sourceResourceReferences = [...new Set((runningImport || []).map((row) => String(row[runningMapping.equipment] ?? "").trim()).filter(Boolean))];
+  const savedResourceMap = new Map(resourceMappings.map((item) => [item.resource_reference_key || normalizeResourceReference(item.resource_reference), item.equipment_id]));
+  const equipmentByReference = new Map(resourceEquipment.map((item) => [normalizeResourceReference(item.sap_equipment_no), item.id]));
+  function selectedEquipmentForReference(reference) {
+    const key = normalizeResourceReference(reference);
+    return resourceSelections[key] || savedResourceMap.get(key) || equipmentByReference.get(key) || "";
+  }
+  const unmappedResourceReferences = sourceResourceReferences.filter((reference) => !selectedEquipmentForReference(reference));
   const filteredActivities = activities.filter(a => [labelEquipment(activityEquipment,a.equipment_id), labelComponent(activityEquipment,activityComponents,a.component_id), a.activity_type, a.technician_name, a.sap_notification_no, a.remarks].join(" ").toLowerCase().includes(activitySearch.toLowerCase()));
   const filteredOils = oils.filter(o => [o.sample_id, labelEquipment(equipment,o.equipment_id), labelComponent(equipment,components,o.component_id), o.laboratory, o.status, o.recommendation].join(" ").toLowerCase().includes(oilSearch.toLowerCase()));
   const filteredInventory = inventory.filter(i => [labelLubricant(lubricants,i.lubricant_id), i.store_location, i.unit].join(" ").toLowerCase().includes(inventorySearch.toLowerCase()));
@@ -348,14 +371,24 @@ function ModuleLoadingState({ title, detail, onRetry }) {
   </>;
 
   if (page === "Activities") return <>
-    {showActivity && <ModuleForm title="Record lubrication activity" subtitle="Record actual work independently of whether an SAP notification exists." onClose={()=>setShowActivity(false)} onSubmit={saveActivity} saving={saving} saveText="Record activity"><div className="module-form-grid"><MField label="Equipment"><select required value={activityForm.equipment_id} onChange={e=>setActivityForm({...activityForm,equipment_id:e.target.value,component_id:""})}><option value="">Select equipment</option>{activityEquipment.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></MField><MField label="Component"><select value={activityForm.component_id} onChange={e=>setActivityForm({...activityForm,component_id:e.target.value})}><option value="">Select component</option>{activityComponents.filter(x=>x.equipment_id===activityForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField><MField label="Requirement"><select value={activityForm.requirement_id} onChange={e=>setActivityForm({...activityForm,requirement_id:e.target.value})}><option value="">Not linked</option>{activityRequirements.filter(x=>x.component_id===activityForm.component_id && x.is_active).map(x=><option key={x.id} value={x.id}>{x.method || "Lubrication requirement"}</option>)}</select></MField><MField label="Activity type"><select value={activityForm.activity_type} onChange={e=>setActivityForm({...activityForm,activity_type:e.target.value})}>{["lubrication","greasing","top_up","oil_replacement","inspection","oil_level_check","condition_check","other"].map(x=><option key={x} value={x}>{x.replaceAll("_"," ")}</option>)}</select></MField><MField label="Activity date"><input type="date" required value={activityForm.activity_date} onChange={e=>setActivityForm({...activityForm,activity_date:e.target.value})}/></MField><MField label="Running hours"><input type="number" min="0" step="0.1" value={activityForm.running_hours} onChange={e=>setActivityForm({...activityForm,running_hours:e.target.value})}/></MField><MField label="Lubricant"><select value={activityForm.lubricant_id} onChange={e=>setActivityForm({...activityForm,lubricant_id:e.target.value})}><option value="">Not specified</option>{activityLubricants.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{labelLubricant(activityLubricants,x.id)}</option>)}</select></MField><MField label="Quantity"><input type="number" min="0" step="any" value={activityForm.quantity} onChange={e=>setActivityForm({...activityForm,quantity:e.target.value})}/></MField><MField label="Unit"><input value={activityForm.quantity_unit} onChange={e=>setActivityForm({...activityForm,quantity_unit:e.target.value})}/></MField><MField label="Reason"><select value={activityForm.reason} onChange={e=>setActivityForm({...activityForm,reason:e.target.value})}>{["routine","inspection_finding","emergency","corrective_action","low_oil_level","leakage","oil_analysis_recommendation","other"].map(x=><option key={x} value={x}>{x.replaceAll("_"," ")}</option>)}</select></MField><MField label="Technician / performer"><input value={activityForm.technician_name} onChange={e=>setActivityForm({...activityForm,technician_name:e.target.value})}/></MField><MField label="SAP Notification #"><input value={activityForm.sap_notification_no} onChange={e=>setActivityForm({...activityForm,sap_notification_no:e.target.value})}/></MField><MField label="Condition before"><input value={activityForm.condition_before} onChange={e=>setActivityForm({...activityForm,condition_before:e.target.value})}/></MField><MField label="Condition after"><input value={activityForm.condition_after} onChange={e=>setActivityForm({...activityForm,condition_after:e.target.value})}/></MField><MField label="Remarks" full><textarea rows="3" value={activityForm.remarks} onChange={e=>setActivityForm({...activityForm,remarks:e.target.value})}/></MField></div></ModuleForm>}
+    {showActivity && <ModuleForm title="Record lubrication activity" subtitle="Record actual work independently of whether an SAP notification exists." onClose={()=>setShowActivity(false)} onSubmit={saveActivity} saving={saving} saveText="Record activity"><div className="module-form-grid"><MField label="Equipment"><SearchableSelect value={activityForm.equipment_id} onChange={(value)=>setActivityForm({...activityForm,equipment_id:value,component_id:""})} options={activityEquipment.filter(x=>x.status==="active").map(x=>({value:x.id,label:`${x.sap_equipment_no} — ${x.description}`}))} placeholder="Select equipment" searchPlaceholder="Search SAP number or equipment name…"/></MField><MField label="Component"><select value={activityForm.component_id} onChange={e=>setActivityForm({...activityForm,component_id:e.target.value})}><option value="">Select component</option>{activityComponents.filter(x=>x.equipment_id===activityForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField><MField label="Requirement"><select value={activityForm.requirement_id} onChange={e=>setActivityForm({...activityForm,requirement_id:e.target.value})}><option value="">Not linked</option>{activityRequirements.filter(x=>x.component_id===activityForm.component_id && x.is_active).map(x=><option key={x.id} value={x.id}>{x.method || "Lubrication requirement"}</option>)}</select></MField><MField label="Activity type"><select value={activityForm.activity_type} onChange={e=>setActivityForm({...activityForm,activity_type:e.target.value})}>{["lubrication","greasing","top_up","oil_replacement","inspection","oil_level_check","condition_check","other"].map(x=><option key={x} value={x}>{x.replaceAll("_"," ")}</option>)}</select></MField><MField label="Activity date"><input type="date" required value={activityForm.activity_date} onChange={e=>setActivityForm({...activityForm,activity_date:e.target.value})}/></MField><MField label="Running hours"><input type="number" min="0" step="0.1" value={activityForm.running_hours} onChange={e=>setActivityForm({...activityForm,running_hours:e.target.value})}/></MField><MField label="Lubricant"><select value={activityForm.lubricant_id} onChange={e=>setActivityForm({...activityForm,lubricant_id:e.target.value})}><option value="">Not specified</option>{activityLubricants.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{labelLubricant(activityLubricants,x.id)}</option>)}</select></MField><MField label="Quantity"><input type="number" min="0" step="any" value={activityForm.quantity} onChange={e=>setActivityForm({...activityForm,quantity:e.target.value})}/></MField><MField label="Unit"><input value={activityForm.quantity_unit} onChange={e=>setActivityForm({...activityForm,quantity_unit:e.target.value})}/></MField><MField label="Reason"><select value={activityForm.reason} onChange={e=>setActivityForm({...activityForm,reason:e.target.value})}>{["routine","inspection_finding","emergency","corrective_action","low_oil_level","leakage","oil_analysis_recommendation","other"].map(x=><option key={x} value={x}>{x.replaceAll("_"," ")}</option>)}</select></MField><MField label="Technician / performer"><input value={activityForm.technician_name} onChange={e=>setActivityForm({...activityForm,technician_name:e.target.value})}/></MField><MField label="SAP Notification #"><input value={activityForm.sap_notification_no} onChange={e=>setActivityForm({...activityForm,sap_notification_no:e.target.value})}/></MField><MField label="Condition before"><input value={activityForm.condition_before} onChange={e=>setActivityForm({...activityForm,condition_before:e.target.value})}/></MField><MField label="Condition after"><input value={activityForm.condition_after} onChange={e=>setActivityForm({...activityForm,condition_after:e.target.value})}/></MField><MField label="Remarks" full><textarea rows="3" value={activityForm.remarks} onChange={e=>setActivityForm({...activityForm,remarks:e.target.value})}/></MField></div></ModuleForm>}
     <ModulePanel title="Lubrication activities" subtitle={`${filteredActivities.length} activity records`} action={<div className="module-toolbar"><input placeholder="Search activities..." value={activitySearch} onChange={e=>setActivitySearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowActivity(true)}>+ Record activity</button></div>}><div className="table-wrap"><table><thead><tr><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>ACTIVITY</th><th>LUBRICANT</th><th>QTY</th><th>RUNNING HOURS</th><th>TECHNICIAN</th><th>SAP NOTIFICATION</th><th>STATUS</th></tr></thead><tbody>{filteredActivities.map(a=><tr key={a.id}><td>{fmtDate(a.activity_date)}</td><td><strong>{labelEquipment(activityEquipment,a.equipment_id)}</strong></td><td>{labelComponent(activityEquipment,activityComponents,a.component_id)}</td><td>{a.activity_type?.replaceAll("_"," ")}</td><td>{labelLubricant(activityLubricants,a.lubricant_id)}</td><td>{a.quantity == null ? "—" : `${a.quantity} ${a.quantity_unit || ""}`}</td><td>{a.running_hours == null ? "—" : `${a.running_hours} h`}</td><td>{a.technician_name || "—"}</td><td>{a.sap_notification_no || "—"}</td><td><Badge value={a.status}/></td></tr>)}</tbody></table></div></ModulePanel>
   </>;
 
   if (page === "Running Hours") return <>
-    <ModulePanel title="SAP COOISPI running-hours import" subtitle="Upload the controlled Excel export, map its columns, preview the rows, then import. Equipment relationships are applied when calculating current hours." action={<label className="primary-button file-button">Choose Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>e.target.files?.[0]&&parseRunningFile(e.target.files[0])}/></label>}>
-      {runningImport && <><div className="import-meta"><strong>{runningFileName}</strong><span>{runningImport.length} rows detected</span></div><div className="module-form-grid"><MField label="SAP Equipment # column"><select value={runningMapping.equipment} onChange={e=>setRunningMapping({...runningMapping,equipment:e.target.value})}><option value="">Select column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField><MField label="Running Hours column"><select value={runningMapping.hours} onChange={e=>setRunningMapping({...runningMapping,hours:e.target.value})}><option value="">Select column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField><MField label="Date / period column (optional)"><select value={runningMapping.date} onChange={e=>setRunningMapping({...runningMapping,date:e.target.value})}><option value="">No date column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField></div><div className="form-actions-inline"><button className="primary-button" onClick={importRunningHours} disabled={saving}>Import validated rows</button></div><div className="table-wrap"><table><thead><tr>{Object.keys(runningPreview[0] || {}).slice(0,8).map(k=><th key={k}>{k}</th>)}</tr></thead><tbody>{runningPreview.map((r,i)=><tr key={i}>{Object.keys(r).slice(0,8).map(k=><td key={k}>{String(r[k])}</td>)}</tr>)}</tbody></table></div></>}
-      {!runningImport && <div className="module-empty"><strong>Controlled import</strong><p>Start with the COOISPI Excel file. The importer validates the SAP Equipment # against your equipment master and never silently imports unmatched rows.</p></div>}
+    <ModulePanel title="SAP COOISPI running-hours import" subtitle="Match each COOISPI Resource Reference to its SAP equipment number. Saved mappings are reused on later imports; equipment relationships continue to apply in the background." action={<label className="primary-button file-button">Choose Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>e.target.files?.[0]&&parseRunningFile(e.target.files[0])}/></label>}>
+      {runningImport && <>
+        <div className="import-meta"><strong>{runningFileName}</strong><span>{runningImport.length} rows detected</span></div>
+        <div className="module-form-grid">
+          <MField label="COOISPI Resource Reference column"><select value={runningMapping.equipment} onChange={e=>{setRunningMapping({...runningMapping,equipment:e.target.value});setResourceSelections({});}}><option value="">Select resource column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField>
+          <MField label="Running Hours column"><select value={runningMapping.hours} onChange={e=>setRunningMapping({...runningMapping,hours:e.target.value})}><option value="">Select column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField>
+          <MField label="Date / period column (optional)"><select value={runningMapping.date} onChange={e=>setRunningMapping({...runningMapping,date:e.target.value})}><option value="">No date column</option>{Object.keys(runningImport[0] || {}).map(k=><option key={k}>{k}</option>)}</select></MField>
+        </div>
+        {runningMapping.equipment && <div className="resource-map-panel"><div className="resource-map-title"><div><strong>Match COOISPI resources to SAP equipment</strong><span>Each reference is saved and reused automatically on the next import.</span></div><b>{unmappedResourceReferences.length ? `${unmappedResourceReferences.length} need matching` : `${sourceResourceReferences.length} ready`}</b></div><div className="resource-map-list">{sourceResourceReferences.map(reference=>{const key=normalizeResourceReference(reference);const isSaved=savedResourceMap.has(key);return <div className="resource-map-row" key={key}><div className="resource-map-ref"><strong>{reference}</strong><small>{isSaved ? "Saved mapping" : "New reference"}</small></div><SearchableSelect value={selectedEquipmentForReference(reference)} onChange={value=>setResourceSelections(current=>({...current,[key]:value}))} options={resourceEquipment.map(item=>({value:item.id,label:`${item.sap_equipment_no} — ${item.description}`}))} placeholder="Select SAP equipment" searchPlaceholder="Search SAP number or equipment name…" emptyText="No equipment found"/></div>})}</div></div>}
+        <div className="form-actions-inline"><button className="primary-button" onClick={importRunningHours} disabled={saving || !runningMapping.equipment || !runningMapping.hours || !sourceResourceReferences.length || unmappedResourceReferences.length>0}>{saving ? "Importing…" : "Save mappings and import"}</button></div>
+        <div className="table-wrap"><table><thead><tr>{Object.keys(runningPreview[0] || {}).slice(0,8).map(k=><th key={k}>{k}</th>)}</tr></thead><tbody>{runningPreview.map((r,i)=><tr key={i}>{Object.keys(r).slice(0,8).map(k=><td key={k}>{String(r[k])}</td>)}</tr>)}</tbody></table></div>
+      </>}
+      {!runningImport && <div className="module-empty"><strong>Resource-reference mapping</strong><p>Upload the COOISPI Excel file, select its Resource Reference column, then link each unique reference to the SAP Equipment #. For example, map COALM02 to 751-RM-01 once; that link will be reused automatically on future imports.</p></div>}
     </ModulePanel>
     <div className="module-grid-2"><ModulePanel title="Current running hours" subtitle="Direct SAP hours plus inherited relationship logic"><div className="table-wrap"><table><thead><tr><th>EQUIPMENT</th><th>SAP HOURS</th><th>CALCULATED HOURS</th><th>SOURCE</th></tr></thead><tbody>{equipment.filter(x=>x.status==="active").map(e=>{const directRows=runningRows.filter(r=>r.equipment_id===e.id); const directTotal=directRows.reduce((sum,r)=>sum+number(r.running_hours),0); const calc=hoursByEquipment[e.id]; return <tr key={e.id}><td><strong>{e.sap_equipment_no}</strong><small className="cell-sub">{e.description}</small></td><td>{directRows.length ? `${Math.round(directTotal)} h` : "—"}</td><td>{calc == null ? "—" : <strong>{Math.round(calc)} h</strong>}</td><td>{directRows.length ? "SAP COOISPI" : "Relationship inheritance"}</td></tr>})}</tbody></table></div></ModulePanel><ModulePanel title="Import history" subtitle="Every running-hours import remains traceable"><div className="table-wrap"><table><thead><tr><th>FILE</th><th>PERIOD</th><th>ROWS</th><th>MATCHED</th><th>UNMATCHED</th><th>STATUS</th></tr></thead><tbody>{imports.map(i=><tr key={i.id}><td>{i.file_name}</td><td>{fmtDate(i.period_from)} – {fmtDate(i.period_to)}</td><td>{i.total_rows}</td><td>{i.matched_rows ?? "—"}</td><td>{i.unmatched_rows ?? "—"}</td><td><Badge value={i.import_status}/></td></tr>)}</tbody></table></div></ModulePanel></div>
   </>;
@@ -367,7 +400,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         <section className="oil-analysis-section"><h3>Sample and equipment details</h3><div className="module-form-grid">
           <MField label="Sample ID"><input required value={oilForm.sample_id} onChange={e=>updateOilField("sample_id",e.target.value)}/></MField>
           <MField label="Sample date"><input type="date" required value={oilForm.sample_date} onChange={e=>updateOilField("sample_date",e.target.value)}/></MField>
-          <MField label="Equipment"><select required value={oilForm.equipment_id} onChange={e=>setOilForm({...oilForm,equipment_id:e.target.value,component_id:""})}><option value="">Select equipment</option>{equipment.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{x.sap_equipment_no} — {x.description}</option>)}</select></MField>
+          <MField label="Equipment"><SearchableSelect value={oilForm.equipment_id} onChange={(value)=>setOilForm({...oilForm,equipment_id:value,component_id:""})} options={(moduleLookups?.equipment || equipment).filter(x=>x.status==="active").map(x=>({value:x.id,label:`${x.sap_equipment_no} — ${x.description}`}))} placeholder="Select equipment" searchPlaceholder="Search SAP number or equipment name…"/></MField>
           <MField label="Equipment / machine name on report"><input value={oilForm.equipment_name} onChange={e=>updateOilField("equipment_name",e.target.value)}/></MField>
           <MField label="Component"><select value={oilForm.component_id} onChange={e=>updateOilField("component_id",e.target.value)}><option value="">Not specified</option>{components.filter(x=>x.equipment_id===oilForm.equipment_id).map(x=><option key={x.id} value={x.id}>{x.component_name}</option>)}</select></MField>
           <MField label="Equipment running hours"><input type="number" value={oilForm.running_hours} onChange={e=>updateOilField("running_hours",e.target.value)}/></MField>
