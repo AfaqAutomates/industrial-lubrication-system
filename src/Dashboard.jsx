@@ -6,7 +6,7 @@ import "./index.css";
 
 const navigation = [
   { section: "WORKSPACE", items: ["Dashboard", "Equipment", "Equipment Relationships", "Components"] },
-  { section: "LUBRICATION", items: ["Lubrication Requirements", "Work Schedule", "Activities", "Running Hours", "Oil Analysis"] },
+  { section: "LUBRICATION", items: ["Lubrication Requirements", "Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Equipment History"] },
   { section: "RESOURCES", items: ["Lubricant Master", "Inventory", "Reports"] },
   { section: "SYSTEM", items: ["Alerts", "User Management", "Settings", "Audit History"] },
 ];
@@ -22,6 +22,7 @@ const pageMeta = {
   Activities: ["Execution", "Record and monitor lubrication activities."],
   "Running Hours": ["Runtime data", "Manage equipment running-hour information and inheritance."],
   "Oil Analysis": ["Condition monitoring", "Review oil-analysis records and alerts."],
+  "Equipment History": ["Asset record", "Extract a selected equipment or component's lubrication history."],
   Inventory: ["Materials", "Monitor lubricant stock and procurement information."],
   Reports: ["Analytics", "Review reliability and lubrication reports."],
   Alerts: ["Attention required", "Review system and lubrication alerts."],
@@ -181,7 +182,7 @@ function Dashboard({ profile }) {
     const request = (async () => {
       setLoading(true);
       try {
-        const lookupModules = ["Dashboard", "Equipment", "Equipment Relationships", "Components", "Lubrication Requirements", "Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Lubricant Master", "Inventory", "Reports", "Alerts"];
+        const lookupModules = ["Dashboard", "Equipment", "Equipment Relationships", "Components", "Lubrication Requirements", "Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Equipment History", "Lubricant Master", "Inventory", "Reports", "Alerts"];
         const hasAnyModule = profile?.role === "master_admin" || lookupModules.some((module) => [true, "view", "edit"].includes(profile?.module_permissions?.[module]));
         const referenceRequest = hasAnyModule ? supabase.rpc("get_module_reference_lookups") : Promise.resolve({ data: null, error: null });
         const [plantResult, areaResult, equipmentResult, relationshipResult, componentResult, lubricantResult, requirementResult, totalCountResult, activeCountResult, referenceResult] = await Promise.all([
@@ -359,7 +360,7 @@ function Dashboard({ profile }) {
   function getComponentLabel(id) { const c = components.find((x) => x.id === id); if (!c) return "Component not found"; const e = equipment.find((x) => x.id === c.equipment_id); return `${e?.sap_equipment_no || "No equipment"} — ${c.component_name}`; }
   function getLubricantLabel(id) { const l = lubricants.find((x) => x.id === id); return l ? [l.product_code, l.product_name, l.grade].filter(Boolean).join(" — ") : "Not specified"; }
   function formatFrequency(item) { if (item.frequency_basis === "calendar") return `Every ${item.interval_days} days`; if (item.frequency_basis === "running_hours") return `Every ${item.interval_hours} running hours`; return `${item.interval_days} days or ${item.interval_hours} running hours`; }
-  function pageIcon(page) { const map = { Dashboard: "grid", Equipment: "equipment", "Equipment Relationships": "link", Components: "component", "Lubrication Requirements": "schedule", "Work Schedule": "schedule", Activities: "activity", "Running Hours": "clock", "Oil Analysis": "flask", "Lubricant Master": "oil", Inventory: "box", Reports: "report", Alerts: "bell", "User Management": "users", Settings: "settings", "Audit History": "report" }; return map[page] || "grid"; }
+  function pageIcon(page) { const map = { Dashboard: "grid", Equipment: "equipment", "Equipment Relationships": "link", Components: "component", "Lubrication Requirements": "schedule", "Work Schedule": "schedule", Activities: "activity", "Running Hours": "clock", "Oil Analysis": "flask", "Equipment History": "clock", "Lubricant Master": "oil", Inventory: "box", Reports: "report", Alerts: "bell", "User Management": "users", Settings: "settings", "Audit History": "report" }; return map[page] || "grid"; }
   function openEquipmentForm() { setEditingId(null); setForm(emptyEquipmentForm); clearMessages(); setShowForm(true); }
 
   const workspaceBusy = loading || saving || savingRelationship || savingComponent || savingRequirement || savingLubricant || deactivatingId !== null || deactivatingRelationshipId !== null || deactivatingComponentId !== null || deactivatingRequirementId !== null || deactivatingLubricantId !== null;
@@ -443,7 +444,7 @@ function Dashboard({ profile }) {
             </DataPanel>
           </>}
 
-          {["Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Inventory", "Reports", "Alerts", "User Management", "Settings", "Audit History"].includes(activePage) && <RemainingModules page={activePage} profile={profile} canEdit={canEditCurrentPage} equipment={equipment} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} refresh={loadData} setNotice={setNotice} setError={setError}/>}          
+          {["Work Schedule", "Activities", "Running Hours", "Oil Analysis", "Equipment History", "Inventory", "Reports", "Alerts", "User Management", "Settings", "Audit History"].includes(activePage) && <RemainingModules page={activePage} profile={profile} canEdit={canEditCurrentPage} equipment={equipment} components={components} lubricants={lubricants} requirements={requirements} relationships={relationships} refresh={loadData} setNotice={setNotice} setError={setError}/>}
           <footer className="page-footer"><span>Industrial Lubrication Management & Reliability System</span><span>Plant workspace • Supabase connected</span></footer>
         </section>
       </main>

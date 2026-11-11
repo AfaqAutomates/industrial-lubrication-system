@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import Dashboard from "./Dashboard";
 
@@ -12,6 +12,7 @@ export default function App() {
   const [checking, setChecking] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const idleSignOutRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -28,7 +29,9 @@ export default function App() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
-      setNotice("");
+      const idleEnded = idleSignOutRef.current;
+      setNotice(idleEnded ? "You were signed out after 15 minutes without activity." : "");
+      idleSignOutRef.current = false;
     });
 
     return () => {
@@ -36,6 +39,49 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!session || !profile?.is_active || !profile?.role) return undefined;
+    const idleLimitMs = 15 * 60 * 1000;
+    let lastActivityAt = Date.now();
+    let timer;
+    let signingOut = false;
+    const signOutWhenIdle = async () => {
+      if (signingOut) return;
+      if (Date.now() - lastActivityAt < idleLimitMs) {
+        schedule();
+        return;
+      }
+      signingOut = true;
+      idleSignOutRef.current = true;
+      const { error } = await supabase.auth.signOut();
+      if (error) await supabase.auth.signOut({ scope: "local" });
+    };
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(signOutWhenIdle, Math.max(0, idleLimitMs - (Date.now() - lastActivityAt)));
+    };
+    const recordActivity = () => {
+      if (Date.now() - lastActivityAt >= idleLimitMs) {
+        void signOutWhenIdle();
+        return;
+      }
+      lastActivityAt = Date.now();
+      schedule();
+    };
+    const checkOnReturn = () => {
+      if (document.visibilityState === "visible") void signOutWhenIdle();
+    };
+    const events = ["pointerdown", "keydown", "touchstart", "scroll", "wheel", "mousemove"];
+    events.forEach((name) => window.addEventListener(name, recordActivity, { passive: true }));
+    document.addEventListener("visibilitychange", checkOnReturn);
+    schedule();
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((name) => window.removeEventListener(name, recordActivity));
+      document.removeEventListener("visibilitychange", checkOnReturn);
+    };
+  }, [session, profile]);
 
   useEffect(() => {
     let active = true;

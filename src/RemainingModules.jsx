@@ -5,6 +5,7 @@ import OilReportIntake from "./OilReportIntake";
 import LubricationReport from "./LubricationReport";
 import UserAccessManager from "./UserAccessManager";
 import SearchableSelect from "./SearchableSelect";
+import EquipmentHistory from "./EquipmentHistory";
 
 const emptyActivity = {
   equipment_id: "", component_id: "", requirement_id: "", activity_type: "lubrication",
@@ -12,6 +13,37 @@ const emptyActivity = {
   quantity: "", quantity_unit: "L", reason: "routine", condition_before: "",
   condition_after: "", technician_name: "", sap_notification_no: "", remarks: "", status: "completed",
 };
+const OIL_LIMIT_FIELDS = [
+  ["density_15c", "Density at 15°C", "kg/L"], ["flash_point_coc", "Flash point COC", "°C"],
+  ["flash_point_pmcc", "Flash point PMCC", "°C"], ["flash_point_seta", "Flash point Setaflash", "°C"],
+  ["fuel_dilution", "Fuel dilution", "% vol"], ["viscosity", "Viscosity at 40°C", "mm²/s"],
+  ["viscosity_100c", "Viscosity at 100°C", "mm²/s"], ["viscosity_index", "Viscosity index", ""],
+  ["apparent_viscosity_minus15c", "Apparent viscosity at -15°C", ""], ["water_pct", "Water", "% vol"],
+  ["karl_fischer_water", "Karl Fischer water", "mg/kg"], ["tan", "Acid number / TAN", "mg KOH/g"],
+  ["tbn", "Base number / TBN", "mg KOH/g"], ["iron", "Iron", "mg/kg"], ["copper", "Copper", "mg/kg"],
+  ["chromium", "Chromium", "mg/kg"], ["lead", "Lead", "mg/kg"], ["silicon", "Silicon", "mg/kg"],
+  ["sodium", "Sodium", "mg/kg"], ["aluminium", "Aluminium", "mg/kg"], ["tin", "Tin", "mg/kg"],
+  ["zinc", "Zinc", "mg/kg"], ["calcium", "Calcium", "mg/kg"], ["magnesium", "Magnesium", "mg/kg"],
+  ["oxidation", "Oxidation / ageing", ""], ["nitration", "Nitration", ""],
+  ["pentane_insolubles", "Pentane insolubles", "% mass"], ["particle_count", "Particle count", ""],
+  ["pq_index", "PQ index", ""], ["treat_rate", "Treat rate", ""],
+];
+const MEASURE_LABELS = Object.fromEntries(OIL_LIMIT_FIELDS.map(([key, label]) => [key, label]));
+function parseMeasure(value) {
+  const text = String(value ?? "").trim();
+  if (!text || /[<>≤≥]/.test(text)) return null;
+  const n = Number(text.replaceAll(",", ""));
+  return Number.isFinite(n) ? n : null;
+}
+function limitLevel(value, limit) {
+  const n = parseMeasure(value);
+  if (n == null || !limit?.enabled) return "";
+  if (limit.lower_critical != null && n < Number(limit.lower_critical)) return "critical";
+  if (limit.upper_critical != null && n > Number(limit.upper_critical)) return "critical";
+  if (limit.lower_warning != null && n < Number(limit.lower_warning)) return "warning";
+  if (limit.upper_warning != null && n > Number(limit.upper_warning)) return "warning";
+  return "";
+}
 const emptyOil = {
   sample_id: "", equipment_id: "", component_id: "", sample_date: new Date().toISOString().slice(0, 10),
   running_hours: "", oil_hours: "", lubricant_id: "", sample_point: "", laboratory: "", laboratory_report_no: "",
@@ -48,6 +80,7 @@ export default function RemainingModules({ page, profile, canEdit, equipment, co
   const [activities, setActivities] = useState([]);
   const [moduleLookups, setModuleLookups] = useState(null);
   const [oils, setOils] = useState([]);
+  const [oilLimits, setOilLimits] = useState([]);
   const [inventory, setInventory] = useState([]);
   const [inventoryTx, setInventoryTx] = useState([]);
   const [alerts, setAlerts] = useState([]);
@@ -91,6 +124,17 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     } catch (_) { /* Audit failure must not block the operational transaction. */ }
   }
 
+  async function fetchAllRows(table, orderColumn) {
+    const pageSize = 1000;
+    const rows = [];
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase.from(table).select("*").order(orderColumn, { ascending: false }).order("id", { ascending: true }).range(offset, offset + pageSize - 1);
+      if (error) return { data: null, error };
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) return { data: rows, error: null };
+    }
+  }
+
   async function loadModuleData() {
     if (moduleLoadRequestRef.current) return moduleLoadRequestRef.current;
     const request = (async () => {
@@ -103,11 +147,11 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         const emptyResult = () => Promise.resolve({ data: [], error: null });
         const lookupRequest = ["Activities", "Oil Analysis", "Running Hours"].includes(page) && canRead(page) ? supabase.rpc("get_module_reference_lookups") : Promise.resolve({ data: null, error: null });
         const resourceMapRequest = page === "Running Hours" && canRead("Running Hours") ? supabase.from("cooispi_resource_mappings").select("id,resource_reference,resource_reference_key,equipment_id").order("resource_reference") : emptyResult();
-        const [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult] = await Promise.all([
+        const [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult, limitResult] = await Promise.all([
           needsAny(["Running Hours", "Work Schedule", "Reports", "Alerts"]) ? supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000) : emptyResult(),
           needsAny(["Running Hours", "Reports"]) ? supabase.from("running_hours_imports").select("*").order("imported_at", { ascending: false }).limit(50) : emptyResult(),
-          needsAny(["Activities", "Work Schedule", "Reports", "Alerts"]) ? supabase.from("lubrication_activities").select("*").order("activity_date", { ascending: false }).limit(1000) : emptyResult(),
-          needsAny(["Oil Analysis", "Reports", "Alerts"]) ? supabase.from("oil_analysis_samples").select("*").order("sample_date", { ascending: false }).limit(500) : emptyResult(),
+          needsAny(["Activities", "Work Schedule", "Reports", "Alerts", "Equipment History"]) ? fetchAllRows("lubrication_activities", "activity_date") : emptyResult(),
+          needsAny(["Oil Analysis", "Reports", "Alerts", "Equipment History"]) ? fetchAllRows("oil_analysis_samples", "sample_date") : emptyResult(),
           needsAny(["Inventory", "Reports", "Alerts"]) ? supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }) : emptyResult(),
           needsAny(["Inventory", "Reports"]) ? supabase.from("lubricant_inventory_transactions").select("*").order("transaction_date", { ascending: false }).limit(1000) : emptyResult(),
           canRead("Alerts") ? supabase.from("system_alerts").select("*").order("created_at", { ascending: false }).limit(500) : emptyResult(),
@@ -116,14 +160,16 @@ function ModuleLoadingState({ title, detail, onRetry }) {
           needsAny(["Inventory", "Reports"]) ? supabase.from("procurement_records").select("*").order("delivery_expected", { ascending: true }).limit(500) : emptyResult(),
           lookupRequest,
           resourceMapRequest,
+          needsAny(["Oil Analysis", "Reports", "Alerts"]) ? supabase.from("oil_analysis_limits").select("*").order("display_name") : emptyResult(),
         ]);
-        const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult].find((result) => result.error)?.error;
+        const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult, limitResult].find((result) => result.error)?.error;
         if (first) throw new Error(first.message);
         setRunningRows(rh.data || []);
         setImports(imp.data || []);
         if (page === "Running Hours") setResourceMappings(resourceMapResult.data || []);
         setActivities(act.data || []);
         setOils(oa.data || []);
+        setOilLimits(limitResult.data || []);
         setInventory(inv.data || []);
         setInventoryTx(tx.data || []);
         setAlerts(al.data || []);
@@ -196,9 +242,39 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     const result = [];
     scheduleRows.filter(x => x.status === "overdue").forEach(x => result.push({ id: `schedule-${x.id}`, title: "Lubrication overdue", message: `${x.equipment.sap_equipment_no} / ${x.component.component_name} requires ${x.method || "lubrication"}.`, severity: "high", status: "open", source: "Work Schedule" }));
     inventory.forEach(i => { const stock = number(i.current_stock); if (i.critical_stock != null && stock <= number(i.critical_stock)) result.push({ id: `stock-${i.id}`, title: "Critical lubricant stock", message: `${labelLubricant(lubricants, i.lubricant_id)} is at ${stock} ${i.unit || "unit"}.`, severity: "critical", status: "open", source: "Inventory" }); else if (i.minimum_stock != null && stock <= number(i.minimum_stock)) result.push({ id: `stock-${i.id}`, title: "Low lubricant stock", message: `${labelLubricant(lubricants, i.lubricant_id)} is below minimum stock.`, severity: "medium", status: "open", source: "Inventory" }); });
-    oils.filter(x => ["alarm", "critical", "warning"].includes(String(x.status).toLowerCase())).forEach(x => result.push({ id: `oil-${x.id}`, title: "Oil analysis attention", message: `${x.sample_id || "Sample"} for ${labelEquipment(equipment, x.equipment_id)} is ${x.status}.`, severity: String(x.status).toLowerCase() === "critical" ? "critical" : "high", status: "open", source: "Oil Analysis" }));
+    const enabledLimits = oilLimits.filter(x => x.enabled);
+    const latestByAsset = new Map();
+    [...oils].sort((a, b) => String(b.sample_date || "").localeCompare(String(a.sample_date || "")) || String(b.id || "").localeCompare(String(a.id || ""))).forEach(sample => {
+      const asset = `${sample.equipment_id}|${sample.component_id || ""}`;
+      if (!latestByAsset.has(asset)) latestByAsset.set(asset, sample);
+    });
+    [...latestByAsset.values()].filter(x => ["alarm", "critical", "warning"].includes(String(x.status).toLowerCase()) && !enabledLimits.some(limit => limitLevel(x[limit.parameter_key], limit))).forEach(x => result.push({ id: `oil-${x.id}`, title: String(x.status).toLowerCase() === "critical" ? "Oil replacement review recommended" : "Oil analysis attention", message: `${x.sample_id || "Sample"} for ${labelEquipment(equipment, x.equipment_id)} is ${x.status}. Review lab guidance and confirm the corrective action.`, severity: String(x.status).toLowerCase() === "critical" ? "critical" : "high", status: "open", source: "Oil Analysis" }));
+    latestByAsset.forEach(sample => enabledLimits.forEach(limit => {
+      const level = limitLevel(sample[limit.parameter_key], limit);
+      if (!level) return;
+      const val = sample[limit.parameter_key];
+      result.push({ id: `oil-limit-${sample.id}-${limit.parameter_key}`, title: level === "critical" ? "Oil replacement review recommended" : "Oil analysis limit warning", message: `${labelEquipment(equipment, sample.equipment_id)}${sample.component_id ? ` / ${labelComponent(equipment, components, sample.component_id)}` : ""}: ${MEASURE_LABELS[limit.parameter_key] || limit.display_name} is ${val} ${limit.unit || ""} (sample ${sample.sample_id || "—"}, ${fmtDate(sample.sample_date)}). Review lab/OEM guidance and confirm whether replacement is required.`, severity: level === "critical" ? "critical" : "high", status: "open", source: "Oil Analysis" });
+    }));
+    const assetGroups = new Map();
+    oils.forEach(sample => { const key = `${sample.equipment_id}|${sample.component_id || ""}`; (assetGroups.get(key) || assetGroups.set(key, []).get(key)).push(sample); });
+    assetGroups.forEach(samples => {
+      const chronological = samples.slice().sort((a, b) => String(a.sample_date || "").localeCompare(String(b.sample_date || "")) || String(a.id || "").localeCompare(String(b.id || "")));
+      enabledLimits.filter(x => x.trend_enabled && ["higher", "lower"].includes(x.trend_direction)).forEach(limit => {
+        const count = Math.max(3, Number(limit.trend_min_samples) || 3);
+        const points = chronological.map(x => ({ sample: x, value: parseMeasure(x[limit.parameter_key]) })).filter(x => x.value != null).slice(-count);
+        if (points.length < count) return;
+        const worsening = points.every((point, i) => i === 0 || (limit.trend_direction === "higher" ? point.value >= points[i - 1].value : point.value <= points[i - 1].value));
+        const firstValue = points[0].value, lastValue = points.at(-1).value;
+        if (!worsening) return;
+        const changePct = firstValue === 0 ? (lastValue === 0 ? 0 : 100) : Math.abs((lastValue - firstValue) / Math.abs(firstValue) * 100);
+        const requiredChangePct = Number(limit.trend_change_pct);
+        if (!Number.isFinite(requiredChangePct) || requiredChangePct <= 0 || changePct < requiredChangePct) return;
+        const last = points.at(-1).sample;
+        result.push({ id: `oil-trend-${last.id}-${limit.parameter_key}`, title: "Oil replacement review recommended", message: `${labelEquipment(equipment, last.equipment_id)}${last.component_id ? ` / ${labelComponent(equipment, components, last.component_id)}` : ""}: ${MEASURE_LABELS[limit.parameter_key] || limit.display_name} worsened ${changePct.toFixed(0)}% across ${count} consecutive samples (latest ${fmtDate(last.sample_date)}). Review lab/OEM guidance and confirm whether replacement is required.`, severity: "high", status: "open", source: "Oil Analysis Trend" });
+      });
+    });
     return [...result, ...alerts];
-  }, [scheduleRows, inventory, oils, alerts, lubricants, equipment]);
+  }, [scheduleRows, inventory, oils, oilLimits, alerts, lubricants, equipment, components]);
 
   async function saveActivity(e) {
     e.preventDefault(); if (!activityForm.equipment_id) return setError("Select an equipment record before saving the activity."); setSaving(true); setError("");
@@ -230,6 +306,20 @@ function ModuleLoadingState({ title, detail, onRetry }) {
       }
       setOilForm(emptyOil); setReportFile(null); setShowOil(false); setNotice("Oil-analysis sample and report saved."); await writeAudit("Oil Analysis", null, "create", payload); await loadModuleData();
     } catch (e2) { setError(e2.message); } finally { setSaving(false); }
+  }
+  async function saveOilLimits() {
+    if (profile?.role !== "master_admin") return setError("Only the master admin can change oil-analysis limits.");
+    setSaving(true); setError("");
+    try {
+      const rows = oilLimits.map(row => ({ ...row, updated_by: profile.id, updated_at: new Date().toISOString() }));
+      const { error } = await supabase.from("oil_analysis_limits").upsert(rows, { onConflict: "parameter_key" });
+      if (error) throw new Error(error.message);
+      setNotice("Oil-analysis limits saved."); await loadModuleData();
+    } catch (e) { setError(e.message || "Could not save oil-analysis limits."); }
+    finally { setSaving(false); }
+  }
+  function updateOilLimit(key, field, value) {
+    setOilLimits(current => current.map(row => row.parameter_key === key ? { ...row, [field]: ["enabled", "trend_enabled"].includes(field) ? value : value === "" ? null : ["trend_direction"].includes(field) ? value : Number(value), ...(field === "trend_direction" ? { trend_enabled: value !== "none" } : {}) } : row));
   }
   async function openOilAttachment(item) {
     const { data, error } = await supabase.storage.from("oil-analysis-reports").createSignedUrl(item.report_attachment_path, 120);
@@ -474,9 +564,13 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     <ModulePanel title="Oil analysis" subtitle={filteredOils.length + " samples"} action={<div className="module-toolbar"><input placeholder="Search samples..." value={oilSearch} onChange={e=>setOilSearch(e.target.value)}/><button className="primary-button" onClick={()=>{setOilForm(emptyOil);setReportFile(null);setShowOil(true);}}>+ Add sample</button></div>}>
       <div className="oil-kpis"><div><b>{oils.length}</b><span>Samples</span></div><div><b>{oils.filter(x=>x.status==="normal").length}</b><span>Normal</span></div><div><b>{oils.filter(x=>x.status==="warning").length}</b><span>Warning</span></div><div><b>{oils.filter(x=>["alarm","critical"].includes(x.status)).length}</b><span>Alarm / Critical</span></div></div>
       <div className="table-wrap"><table><thead><tr><th>SAMPLE</th><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>LAB</th><th>VISCOSITY 40°C</th><th>VISCOSITY 100°C</th><th>IRON</th><th>WATER</th><th>STATUS</th><th>REPORT</th></tr></thead><tbody>
-        {filteredOils.map(o=><tr key={o.id}><td><strong>{o.sample_id}</strong></td><td>{fmtDate(o.sample_date)}</td><td>{labelEquipment(equipment,o.equipment_id)}</td><td>{labelComponent(equipment,components,o.component_id)}</td><td>{o.laboratory || "—"}</td><td>{o.viscosity || "—"}</td><td>{o.viscosity_100c || "—"}</td><td>{o.iron || "—"}</td><td>{o.water_pct || o.karl_fischer_water || o.water || "—"}</td><td><Badge value={o.status}/></td><td>{o.report_attachment_path ? <button className="table-action" onClick={()=>openOilAttachment(o)}>{o.report_attachment_name || "Open scan"}</button> : "—"}</td></tr>)}
+        {filteredOils.map(o=>{const evaluated=oilLimits.map(limit=>limitLevel(o[limit.parameter_key],limit)).filter(Boolean);const computedStatus=evaluated.includes("critical")?"critical":evaluated.includes("warning")?"warning":null;return <tr key={o.id}><td><strong>{o.sample_id}</strong></td><td>{fmtDate(o.sample_date)}</td><td>{labelEquipment(equipment,o.equipment_id)}</td><td>{labelComponent(equipment,components,o.component_id)}</td><td>{o.laboratory || "—"}</td><td>{o.viscosity || "—"}</td><td>{o.viscosity_100c || "—"}</td><td>{o.iron || "—"}</td><td>{o.water_pct || o.karl_fischer_water || o.water || "—"}</td><td><Badge value={computedStatus || o.status}/>{computedStatus && <small className="cell-sub">Limit check</small>}</td><td>{o.report_attachment_path ? <button className="table-action" onClick={()=>openOilAttachment(o)}>{o.report_attachment_name || "Open scan"}</button> : "—"}</td></tr>})}
       </tbody></table></div>
     </ModulePanel>
+    {profile?.role === "master_admin" && <ModulePanel title="Oil analysis limits · Master admin" subtitle="Enter values approved by your laboratory or OEM. Blank limits are not evaluated; this setup does not assume generic oil limits." action={<button className="primary-button" onClick={saveOilLimits} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save all limits"}</button>}>
+      <div className="oil-limits-note">A warning or critical limit is checked against each sample. Trend alerts need the configured number of consecutive worsening samples and a change percentage. Enter lab/OEM-approved values; blanks are ignored. Alerts prompt an inspection decision and do not automatically record a replacement.</div>
+      <div className="table-wrap"><table className="oil-limits-table"><thead><tr><th>Result / unit</th><th>Low warning</th><th>Low critical</th><th>High warning</th><th>High critical</th><th>Trend direction</th><th>Samples</th><th>Change %</th><th>Enabled</th></tr></thead><tbody>{OIL_LIMIT_FIELDS.map(([key,label,unit])=>{const row=oilLimits.find(x=>x.parameter_key===key);if(!row)return null;return <tr key={key}><td><strong>{label}</strong><small className="cell-sub">{unit || "report unit"}</small></td>{["lower_warning","lower_critical","upper_warning","upper_critical"].map(field=><td key={field}><input aria-label={`${label} ${field}`} type="number" step="any" value={row[field] ?? ""} onChange={e=>updateOilLimit(key,field,e.target.value)} /></td>)}<td><select value={row.trend_direction || "none"} onChange={e=>updateOilLimit(key,"trend_direction",e.target.value)}><option value="none">Off</option><option value="higher">Rising is worse</option><option value="lower">Falling is worse</option></select></td><td><input type="number" min="3" max="12" value={row.trend_min_samples || 3} onChange={e=>updateOilLimit(key,"trend_min_samples",e.target.value)}/></td><td><input type="number" min="0.01" step="any" value={row.trend_change_pct ?? ""} onChange={e=>updateOilLimit(key,"trend_change_pct",e.target.value)}/></td><td><input aria-label={`Enable ${label} limit`} type="checkbox" checked={!!row.enabled} onChange={e=>updateOilLimit(key,"enabled",e.target.checked)}/></td></tr>})}</tbody></table></div>
+    </ModulePanel>}
   </>;  if (page === "Inventory") return <>
     {showInventory && <ModuleForm title="Set lubricant stock" subtitle="Maintain the current stock snapshot and thresholds for a store location." onClose={()=>setShowInventory(false)} onSubmit={saveInventory} saving={saving} saveText="Save stock"><div className="module-form-grid"><MField label="Lubricant"><select required value={inventoryForm.lubricant_id} onChange={e=>setInventoryForm({...inventoryForm,lubricant_id:e.target.value})}><option value="">Select lubricant</option>{lubricants.filter(x=>x.status==="active").map(x=><option key={x.id} value={x.id}>{labelLubricant(lubricants,x.id)}</option>)}</select></MField><MField label="Store location"><input value={inventoryForm.store_location} onChange={e=>setInventoryForm({...inventoryForm,store_location:e.target.value})} placeholder="e.g. Central Lubricant Store"/></MField><MField label="Unit"><input value={inventoryForm.unit} onChange={e=>setInventoryForm({...inventoryForm,unit:e.target.value})}/></MField><MField label="Current stock"><input type="number" step="any" value={inventoryForm.current_stock} onChange={e=>setInventoryForm({...inventoryForm,current_stock:e.target.value})}/></MField><MField label="Minimum stock"><input type="number" step="any" value={inventoryForm.minimum_stock} onChange={e=>setInventoryForm({...inventoryForm,minimum_stock:e.target.value})}/></MField><MField label="Critical stock"><input type="number" step="any" value={inventoryForm.critical_stock} onChange={e=>setInventoryForm({...inventoryForm,critical_stock:e.target.value})}/></MField></div></ModuleForm>}
     <ModulePanel title="Lubricant inventory" subtitle="Current stock, minimum stock and material risk visibility" action={<div className="module-toolbar"><input placeholder="Search inventory..." value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)}/><button className="primary-button" onClick={()=>setShowInventory(true)}>+ Set stock</button></div>}><div className="inventory-kpis"><div><b>{inventory.length}</b><span>Stock items</span></div><div><b>{inventory.filter(x=>number(x.current_stock)<=number(x.minimum_stock)).length}</b><span>Low stock</span></div><div><b>{inventory.filter(x=>number(x.current_stock)<=number(x.critical_stock)).length}</b><span>Critical stock</span></div><div><b>{procurement.filter(x=>!["Closed","Cancelled","Fully Received"].includes(x.status)).length}</b><span>Open procurement</span></div></div><div className="table-wrap"><table><thead><tr><th>LUBRICANT</th><th>STORE</th><th>CURRENT</th><th>MINIMUM</th><th>CRITICAL</th><th>OPEN PROCUREMENT</th><th>STATUS</th></tr></thead><tbody>{filteredInventory.map(i=>{const p=procurement.filter(x=>x.item_code===lubricants.find(l=>l.id===i.lubricant_id)?.product_code && !["Closed","Cancelled","Fully Received"].includes(x.status)).reduce((s,x)=>s+number(x.quantity),0); const status=number(i.current_stock)<=number(i.critical_stock)?"critical":number(i.current_stock)<=number(i.minimum_stock)?"low":"healthy"; return <tr key={i.id}><td><strong>{labelLubricant(lubricants,i.lubricant_id)}</strong></td><td>{i.store_location || "—"}</td><td>{i.current_stock} {i.unit}</td><td>{i.minimum_stock} {i.unit}</td><td>{i.critical_stock} {i.unit}</td><td>{p ? `${p} ${i.unit}` : "—"}</td><td><Badge value={status} tone={status}/></td></tr>})}</tbody></table></div></ModulePanel>
@@ -488,6 +582,8 @@ function ModuleLoadingState({ title, detail, onRetry }) {
   }
 
   if (page === "Reports") return <LubricationReport activities={activities} oils={oils} scheduleRows={scheduleRows} inventory={inventory} equipment={equipment} components={components} lubricants={lubricants} labelEquipment={labelEquipment} labelComponent={labelComponent} labelLubricant={labelLubricant} fmtDate={fmtDate} number={number}/>;
+
+  if (page === "Equipment History") return <EquipmentHistory activities={activities} oils={oils} equipment={equipment} components={components} lubricants={lubricants} labelEquipment={labelEquipment} labelComponent={labelComponent} labelLubricant={labelLubricant} fmtDate={fmtDate}/>;
 
   if (page === "User Management") return profile?.role === "master_admin" ? <UserAccessManager profiles={profiles} saving={saving} moduleLoading={moduleLoading} onSave={saveUserPermissions} onToggleActive={toggleUserActive}/> : <div className="module-empty"><strong>Administrator access required</strong><p>This area is only available to master administrators.</p></div>;
 

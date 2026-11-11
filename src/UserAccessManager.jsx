@@ -4,7 +4,7 @@ const ACCESS_MODULES = [
   ["Dashboard", "Dashboard"], ["Equipment", "Equipment"], ["Equipment Relationships", "Equipment Relationships"],
   ["Components", "Components"], ["Lubrication Requirements", "Lubrication Requirements"],
   ["Work Schedule", "Work Schedule"], ["Activities", "Activities"], ["Running Hours", "Running Hours"],
-  ["Oil Analysis", "Oil Analysis"], ["Lubricant Master", "Lubricant Master"], ["Inventory", "Inventory"],
+  ["Oil Analysis", "Oil Analysis"], ["Equipment History", "Equipment History"], ["Lubricant Master", "Lubricant Master"], ["Inventory", "Inventory"],
   ["Reports", "Reports"], ["Alerts", "Alerts"], ["Settings", "Settings"], ["Audit History", "Audit History"],
 ];
 const permissionLevel = (value) => value === true ? "edit" : value === "view" || value === "edit" ? value : "none";
