@@ -87,8 +87,6 @@ export default function App() {
     let active = true;
 
     if (!session) {
-      setProfile(null);
-      setProfileLoading(false);
       return () => {
         active = false;
       };

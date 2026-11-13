@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "./lib/supabase";
 import OilReportIntake from "./OilReportIntake";
@@ -72,8 +72,13 @@ function Badge({ value, tone }) { return <span className={`module-badge ${tone |
 function ModulePanel({ title, subtitle, action, children }) { return <section className="module-panel"><div className="module-panel-head"><div><h2>{title}</h2><p>{subtitle}</p></div>{action}</div>{children}</section>; }
 function ModuleForm({ title, subtitle, onClose, children, onSubmit, saving, saveText = "Save" }) { return <section className="module-form"><div className="module-form-head"><div><div className="card-kicker">DATA ENTRY</div><h2>{title}</h2><p>{subtitle}</p></div><button type="button" className="close-button" onClick={onClose}>×</button></div><form onSubmit={onSubmit}>{children}<div className="module-form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={saving}>{saving ? "Saving..." : saveText}</button></div></form></section>; }
 function MField({ label, full, children }) { return <label className={`field ${full ? "full" : ""}`}><span>{label}</span>{children}</label>; }
+function ModuleLoadingState({ title, detail, onRetry }) {
+  return <div className="module-loading-screen" role="status" aria-live="polite">
+    <div className="module-loading-card"><span className="workspace-spinner"/><strong>{title}</strong><span>{detail}</span>{onRetry && <button type="button" className="secondary-button" onClick={onRetry}>Try again</button>}</div>
+  </div>;
+}
 
-export default function RemainingModules({ page, profile, canEdit, equipment, components, lubricants, requirements, relationships, refresh, setNotice, setError }) {
+export default function RemainingModules({ page, profile, canEdit, equipment, components, lubricants, requirements, relationships, setNotice, setError }) {
   const [runningRows, setRunningRows] = useState([]);
   const [imports, setImports] = useState([]);
   const [resourceMappings, setResourceMappings] = useState([]);
@@ -82,7 +87,6 @@ export default function RemainingModules({ page, profile, canEdit, equipment, co
   const [oils, setOils] = useState([]);
   const [oilLimits, setOilLimits] = useState([]);
   const [inventory, setInventory] = useState([]);
-  const [inventoryTx, setInventoryTx] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [settings, setSettings] = useState([]);
@@ -112,19 +116,14 @@ export default function RemainingModules({ page, profile, canEdit, equipment, co
   const [runningFileName, setRunningFileName] = useState("");
   const [settingDraft, setSettingDraft] = useState({});
 
-function ModuleLoadingState({ title, detail, onRetry }) {
-  return <div className="module-loading-screen" role="status" aria-live="polite">
-    <div className="module-loading-card"><span className="workspace-spinner"/><strong>{title}</strong><span>{detail}</span>{onRetry && <button type="button" className="secondary-button" onClick={onRetry}>Try again</button>}</div>
-  </div>;
-}
   async function writeAudit(module, recordId, action, newData) {
     try {
       const { data } = await supabase.auth.getUser();
       await supabase.from("audit_log").insert({ module, record_id: recordId || null, action, new_data: newData || null, changed_by: data?.user?.id || null });
-    } catch (_) { /* Audit failure must not block the operational transaction. */ }
+  } catch { /* Audit failure must not block the operational transaction. */ }
   }
 
-  async function fetchAllRows(table, orderColumn) {
+  const fetchAllRows = useCallback(async (table, orderColumn) => {
     const pageSize = 1000;
     const rows = [];
     for (let offset = 0; ; offset += pageSize) {
@@ -133,9 +132,9 @@ function ModuleLoadingState({ title, detail, onRetry }) {
       rows.push(...(data || []));
       if (!data || data.length < pageSize) return { data: rows, error: null };
     }
-  }
+  }, []);
 
-  async function loadModuleData() {
+  const loadModuleData = useCallback(async () => {
     if (moduleLoadRequestRef.current) return moduleLoadRequestRef.current;
     const request = (async () => {
       setModuleLoading(true);
@@ -147,13 +146,12 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         const emptyResult = () => Promise.resolve({ data: [], error: null });
         const lookupRequest = ["Activities", "Oil Analysis", "Running Hours"].includes(page) && canRead(page) ? supabase.rpc("get_module_reference_lookups") : Promise.resolve({ data: null, error: null });
         const resourceMapRequest = page === "Running Hours" && canRead("Running Hours") ? supabase.from("cooispi_resource_mappings").select("id,resource_reference,resource_reference_key,equipment_id").order("resource_reference") : emptyResult();
-        const [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult, limitResult] = await Promise.all([
+        const [rh, imp, act, oa, inv, al, pf, st, pr, lookups, resourceMapResult, limitResult] = await Promise.all([
           needsAny(["Running Hours", "Work Schedule", "Reports", "Alerts"]) ? supabase.from("running_hours_records").select("*").order("period_to", { ascending: false }).limit(5000) : emptyResult(),
           needsAny(["Running Hours", "Reports"]) ? supabase.from("running_hours_imports").select("*").order("imported_at", { ascending: false }).limit(50) : emptyResult(),
           needsAny(["Activities", "Work Schedule", "Reports", "Alerts", "Equipment History"]) ? fetchAllRows("lubrication_activities", "activity_date") : emptyResult(),
           needsAny(["Oil Analysis", "Reports", "Alerts", "Equipment History"]) ? fetchAllRows("oil_analysis_samples", "sample_date") : emptyResult(),
           needsAny(["Inventory", "Reports", "Alerts"]) ? supabase.from("lubricant_inventory").select("*").order("updated_at", { ascending: false }) : emptyResult(),
-          needsAny(["Inventory", "Reports"]) ? supabase.from("lubricant_inventory_transactions").select("*").order("transaction_date", { ascending: false }).limit(1000) : emptyResult(),
           canRead("Alerts") ? supabase.from("system_alerts").select("*").order("created_at", { ascending: false }).limit(500) : emptyResult(),
           admin ? supabase.from("profiles").select("id,email,full_name,role,is_active,module_permissions").order("full_name") : Promise.resolve({ data: [], error: null }),
           canRead("Settings") ? supabase.from("system_settings").select("*").order("setting_key") : emptyResult(),
@@ -162,7 +160,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
           resourceMapRequest,
           needsAny(["Oil Analysis", "Reports", "Alerts"]) ? supabase.from("oil_analysis_limits").select("*").order("display_name") : emptyResult(),
         ]);
-        const first = [rh, imp, act, oa, inv, tx, al, pf, st, pr, lookups, resourceMapResult, limitResult].find((result) => result.error)?.error;
+        const first = [rh, imp, act, oa, inv, al, pf, st, pr, lookups, resourceMapResult, limitResult].find((result) => result.error)?.error;
         if (first) throw new Error(first.message);
         setRunningRows(rh.data || []);
         setImports(imp.data || []);
@@ -171,7 +169,6 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         setOils(oa.data || []);
         setOilLimits(limitResult.data || []);
         setInventory(inv.data || []);
-        setInventoryTx(tx.data || []);
         setAlerts(al.data || []);
         setProfiles(pf.data || []);
         if (["Activities", "Oil Analysis", "Running Hours"].includes(page)) setModuleLookups(lookups.data || { equipment: [], components: [], lubricants: [], requirements: [] });
@@ -188,7 +185,8 @@ function ModuleLoadingState({ title, detail, onRetry }) {
     moduleLoadRequestRef.current = request;
     try { await request; }
     finally { if (moduleLoadRequestRef.current === request) moduleLoadRequestRef.current = null; }
-  }  useEffect(() => { if (!loaded) loadModuleData(); }, [loaded]);
+  }, [fetchAllRows, page, profile, setError]);
+  useEffect(() => { void loadModuleData(); }, [loadModuleData]);
 
   const hoursByEquipment = useMemo(() => {
     const direct = {};
@@ -225,7 +223,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
       const hoursDue = last?.running_hours != null && r.interval_hours ? number(last.running_hours) + number(r.interval_hours) : (r.interval_hours ? currentHours : null);
       const calendarDays = calendarDue ? Math.ceil((calendarDue - today) / 86400000) : null;
       const hourDelta = hoursDue != null && currentHours != null ? hoursDue - currentHours : null;
-      let status = "scheduled";
+      let status;
       let dueReason = "Calendar";
       if (r.frequency_basis === "running_hours") { dueReason = "Running hours"; status = hourDelta != null && hourDelta <= 0 ? "overdue" : hourDelta != null && hourDelta <= 50 ? "due-soon" : "scheduled"; }
       else if (r.frequency_basis === "calendar") { status = calendarDays <= 0 ? "overdue" : calendarDays <= 7 ? "due-soon" : "scheduled"; }
@@ -466,7 +464,7 @@ function ModuleLoadingState({ title, detail, onRetry }) {
   </>;
 
   if (page === "Running Hours") return <>
-    <ModulePanel title="SAP COOISPI running-hours import" subtitle="Match each COOISPI Resource Reference to its SAP equipment number. Saved mappings are reused on later imports; equipment relationships continue to apply in the background." action={<label className="primary-button file-button">Choose Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>e.target.files?.[0]&&parseRunningFile(e.target.files[0])}/></label>}>
+    <ModulePanel title="SAP COOISPI Running-Hours Import" subtitle="Match each COOISPI Resource Reference to its SAP equipment number. Saved mappings are reused on future imports; equipment relationships still determine inherited hours." action={<label className="primary-button file-button">Choose Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={e=>e.target.files?.[0]&&parseRunningFile(e.target.files[0])}/></label>}>
       {runningImport && <>
         <div className="import-meta"><strong>{runningFileName}</strong><span>{runningImport.length} rows detected</span></div>
         <div className="module-form-grid">
@@ -478,9 +476,9 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         <div className="form-actions-inline"><button className="primary-button" onClick={importRunningHours} disabled={saving || !runningMapping.equipment || !runningMapping.hours || !sourceResourceReferences.length || unmappedResourceReferences.length>0}>{saving ? "Importing…" : "Save mappings and import"}</button></div>
         <div className="table-wrap"><table><thead><tr>{Object.keys(runningPreview[0] || {}).slice(0,8).map(k=><th key={k}>{k}</th>)}</tr></thead><tbody>{runningPreview.map((r,i)=><tr key={i}>{Object.keys(r).slice(0,8).map(k=><td key={k}>{String(r[k])}</td>)}</tr>)}</tbody></table></div>
       </>}
-      {!runningImport && <div className="module-empty"><strong>Resource-reference mapping</strong><p>Upload the COOISPI Excel file, select its Resource Reference column, then link each unique reference to the SAP Equipment #. For example, map COALM02 to 751-RM-01 once; that link will be reused automatically on future imports.</p></div>}
+      {!runningImport && <div className="module-empty"><strong>Resource-reference mapping</strong><p>Upload the COOISPI Excel file, select its Resource Reference column, then link each unique reference to the SAP equipment number. For example, COALM02 can map to 751-RM-01; saved mappings are reused on later imports.</p></div>}
     </ModulePanel>
-    <div className="module-grid-2"><ModulePanel title="Current running hours" subtitle="Direct SAP hours plus inherited relationship logic"><div className="table-wrap"><table><thead><tr><th>EQUIPMENT</th><th>SAP HOURS</th><th>CALCULATED HOURS</th><th>SOURCE</th></tr></thead><tbody>{equipment.filter(x=>x.status==="active").map(e=>{const directRows=runningRows.filter(r=>r.equipment_id===e.id); const directTotal=directRows.reduce((sum,r)=>sum+number(r.running_hours),0); const calc=hoursByEquipment[e.id]; return <tr key={e.id}><td><strong>{e.sap_equipment_no}</strong><small className="cell-sub">{e.description}</small></td><td>{directRows.length ? `${Math.round(directTotal)} h` : "—"}</td><td>{calc == null ? "—" : <strong>{Math.round(calc)} h</strong>}</td><td>{directRows.length ? "SAP COOISPI" : "Relationship inheritance"}</td></tr>})}</tbody></table></div></ModulePanel><ModulePanel title="Import history" subtitle="Every running-hours import remains traceable"><div className="table-wrap"><table><thead><tr><th>FILE</th><th>PERIOD</th><th>ROWS</th><th>MATCHED</th><th>UNMATCHED</th><th>STATUS</th></tr></thead><tbody>{imports.map(i=><tr key={i.id}><td>{i.file_name}</td><td>{fmtDate(i.period_from)} – {fmtDate(i.period_to)}</td><td>{i.total_rows}</td><td>{i.matched_rows ?? "—"}</td><td>{i.unmatched_rows ?? "—"}</td><td><Badge value={i.import_status}/></td></tr>)}</tbody></table></div></ModulePanel></div>
+    <div className="module-grid-2"><ModulePanel title="Current running hours" subtitle="Direct Running Hours With Inherited Relationship Logic"><div className="table-wrap"><table><thead><tr><th>EQUIPMENT</th><th>SAP HOURS</th><th>CALCULATED HOURS</th><th>SOURCE</th></tr></thead><tbody>{equipment.filter(x=>x.status==="active").map(e=>{const directRows=runningRows.filter(r=>r.equipment_id===e.id); const directTotal=directRows.reduce((sum,r)=>sum+number(r.running_hours),0); const calc=hoursByEquipment[e.id]; return <tr key={e.id}><td><strong>{e.sap_equipment_no}</strong><small className="cell-sub">{e.description}</small></td><td>{directRows.length ? `${Math.round(directTotal)} h` : "—"}</td><td>{calc == null ? "—" : <strong>{Math.round(calc)} h</strong>}</td><td>{directRows.length ? "SAP COOISPI" : "Relationship inheritance"}</td></tr>})}</tbody></table></div></ModulePanel><ModulePanel title="Import history" subtitle="Every running-hours import remains traceable"><div className="table-wrap"><table><thead><tr><th>FILE</th><th>PERIOD</th><th>ROWS</th><th>MATCHED</th><th>UNMATCHED</th><th>STATUS</th></tr></thead><tbody>{imports.map(i=><tr key={i.id}><td>{i.file_name}</td><td>{fmtDate(i.period_from)} – {fmtDate(i.period_to)}</td><td>{i.total_rows}</td><td>{i.matched_rows ?? "—"}</td><td>{i.unmatched_rows ?? "—"}</td><td><Badge value={i.import_status}/></td></tr>)}</tbody></table></div></ModulePanel></div>
   </>;
 
   if (page === "Oil Analysis") return <>
@@ -561,13 +559,13 @@ function ModuleLoadingState({ title, detail, onRetry }) {
         </div></section>
       </div>
     </ModuleForm>}
-    <ModulePanel title="Oil analysis" subtitle={filteredOils.length + " samples"} action={<div className="module-toolbar"><input placeholder="Search samples..." value={oilSearch} onChange={e=>setOilSearch(e.target.value)}/><button className="primary-button" onClick={()=>{setOilForm(emptyOil);setReportFile(null);setShowOil(true);}}>+ Add sample</button></div>}>
+    <ModulePanel title="Oil Analysis" subtitle={filteredOils.length + " samples"} action={<div className="module-toolbar"><input placeholder="Search Samples..." value={oilSearch} onChange={e=>setOilSearch(e.target.value)}/><button className="primary-button" onClick={()=>{setOilForm(emptyOil);setReportFile(null);setShowOil(true);}}>+ Add sample</button></div>}>
       <div className="oil-kpis"><div><b>{oils.length}</b><span>Samples</span></div><div><b>{oils.filter(x=>x.status==="normal").length}</b><span>Normal</span></div><div><b>{oils.filter(x=>x.status==="warning").length}</b><span>Warning</span></div><div><b>{oils.filter(x=>["alarm","critical"].includes(x.status)).length}</b><span>Alarm / Critical</span></div></div>
       <div className="table-wrap"><table><thead><tr><th>SAMPLE</th><th>DATE</th><th>EQUIPMENT</th><th>COMPONENT</th><th>LAB</th><th>VISCOSITY 40°C</th><th>VISCOSITY 100°C</th><th>IRON</th><th>WATER</th><th>STATUS</th><th>REPORT</th></tr></thead><tbody>
         {filteredOils.map(o=>{const evaluated=oilLimits.map(limit=>limitLevel(o[limit.parameter_key],limit)).filter(Boolean);const computedStatus=evaluated.includes("critical")?"critical":evaluated.includes("warning")?"warning":null;return <tr key={o.id}><td><strong>{o.sample_id}</strong></td><td>{fmtDate(o.sample_date)}</td><td>{labelEquipment(equipment,o.equipment_id)}</td><td>{labelComponent(equipment,components,o.component_id)}</td><td>{o.laboratory || "—"}</td><td>{o.viscosity || "—"}</td><td>{o.viscosity_100c || "—"}</td><td>{o.iron || "—"}</td><td>{o.water_pct || o.karl_fischer_water || o.water || "—"}</td><td><Badge value={computedStatus || o.status}/>{computedStatus && <small className="cell-sub">Limit check</small>}</td><td>{o.report_attachment_path ? <button className="table-action" onClick={()=>openOilAttachment(o)}>{o.report_attachment_name || "Open scan"}</button> : "—"}</td></tr>})}
       </tbody></table></div>
     </ModulePanel>
-    {profile?.role === "master_admin" && <ModulePanel title="Oil analysis limits · Master admin" subtitle="Enter values approved by your laboratory or OEM. Blank limits are not evaluated; this setup does not assume generic oil limits." action={<button className="primary-button" onClick={saveOilLimits} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save all limits"}</button>}>
+    {profile?.role === "master_admin" && <ModulePanel title="Oil Analysis Limits · Master Admin" subtitle="Enter values approved by your laboratory or OEM. Blank limits are not evaluated; no generic oil limits are assumed." action={<button className="primary-button" onClick={saveOilLimits} disabled={saving || moduleLoading}>{saving ? "Saving…" : "Save all limits"}</button>}>
       <div className="oil-limits-note">A warning or critical limit is checked against each sample. Trend alerts need the configured number of consecutive worsening samples and a change percentage. Enter lab/OEM-approved values; blanks are ignored. Alerts prompt an inspection decision and do not automatically record a replacement.</div>
       <div className="table-wrap"><table className="oil-limits-table"><thead><tr><th>Result / unit</th><th>Low warning</th><th>Low critical</th><th>High warning</th><th>High critical</th><th>Trend direction</th><th>Samples</th><th>Change %</th><th>Enabled</th></tr></thead><tbody>{OIL_LIMIT_FIELDS.map(([key,label,unit])=>{const row=oilLimits.find(x=>x.parameter_key===key);if(!row)return null;return <tr key={key}><td><strong>{label}</strong><small className="cell-sub">{unit || "report unit"}</small></td>{["lower_warning","lower_critical","upper_warning","upper_critical"].map(field=><td key={field}><input aria-label={`${label} ${field}`} type="number" step="any" value={row[field] ?? ""} onChange={e=>updateOilLimit(key,field,e.target.value)} /></td>)}<td><select value={row.trend_direction || "none"} onChange={e=>updateOilLimit(key,"trend_direction",e.target.value)}><option value="none">Off</option><option value="higher">Rising is worse</option><option value="lower">Falling is worse</option></select></td><td><input type="number" min="3" max="12" value={row.trend_min_samples || 3} onChange={e=>updateOilLimit(key,"trend_min_samples",e.target.value)}/></td><td><input type="number" min="0.01" step="any" value={row.trend_change_pct ?? ""} onChange={e=>updateOilLimit(key,"trend_change_pct",e.target.value)}/></td><td><input aria-label={`Enable ${label} limit`} type="checkbox" checked={!!row.enabled} onChange={e=>updateOilLimit(key,"enabled",e.target.checked)}/></td></tr>})}</tbody></table></div>
     </ModulePanel>}
@@ -587,9 +585,9 @@ function ModuleLoadingState({ title, detail, onRetry }) {
 
   if (page === "User Management") return profile?.role === "master_admin" ? <UserAccessManager profiles={profiles} saving={saving} moduleLoading={moduleLoading} onSave={saveUserPermissions} onToggleActive={toggleUserActive}/> : <div className="module-empty"><strong>Administrator access required</strong><p>This area is only available to master administrators.</p></div>;
 
-  if (page === "Settings") return <><ModulePanel title="System configuration" subtitle="Admin-controlled settings that influence thresholds and application behavior."><div className="settings-grid">{["due_soon_days","running_hours_due_soon","default_quantity_unit","low_stock_alert_enabled","oil_analysis_alerts_enabled"].map(key=>{const s=settings.find(x=>x.setting_key===key); const value=settingDraft[key] ?? s?.setting_value ?? ""; return <div className="setting-card" key={key}><div><strong>{key.replaceAll("_"," ")}</strong><small>Application setting</small></div><input value={value} onChange={e=>setSettingDraft({...settingDraft,[key]:e.target.value})} disabled={!canEdit}/><button className="secondary-button" onClick={()=>saveSetting(key)} disabled={!canEdit || saving || moduleLoading}>{saving ? "Saving…" : "Save"}</button></div>;})}</div></ModulePanel><ModulePanel title="Configuration notes" subtitle="Keep engineering thresholds configurable rather than hard-coded."><div className="module-empty"><p>Oil-analysis limits, running-hour due-soon windows, stock thresholds and alert behavior should be controlled here or in their respective master-data screens.</p></div></ModulePanel></>;
+  if (page === "Settings") return <><ModulePanel title="System configuration" subtitle="Settings For Thresholds and Application Behavior."><div className="settings-grid">{["due_soon_days","running_hours_due_soon","default_quantity_unit","low_stock_alert_enabled","oil_analysis_alerts_enabled"].map(key=>{const s=settings.find(x=>x.setting_key===key); const value=settingDraft[key] ?? s?.setting_value ?? ""; return <div className="setting-card" key={key}><div><strong>{key.replaceAll("_"," ")}</strong><small>Application setting</small></div><input value={value} onChange={e=>setSettingDraft({...settingDraft,[key]:e.target.value})} disabled={!canEdit}/><button className="secondary-button" onClick={()=>saveSetting(key)} disabled={!canEdit || saving || moduleLoading}>{saving ? "Saving…" : "Save"}</button></div>;})}</div></ModulePanel><ModulePanel title="Configuration notes" subtitle="Keep engineering thresholds configurable."><div className="module-empty"><p>Oil-analysis limits, running-hour due-soon windows, stock thresholds and alert behavior should be controlled here or in their respective master-data screens.</p></div></ModulePanel></>;
 
-  if (page === "Audit History") return <ModulePanel title="Audit history" subtitle="Important changes and import operations should remain traceable."><div className="module-empty"><strong>Audit trail foundation</strong><p>The audit table is ready for application actions. Existing modules can be extended to write old/new JSON snapshots for every material change.</p></div></ModulePanel>;
+  if (page === "Audit History") return <ModulePanel title="Audit History" subtitle="Important Changes and Import Operations Audit Trail."><div className="module-empty"><strong>Audit Trail Foundation</strong><p>The audit table is ready for application actions. Existing modules can be extended to write old/new JSON snapshots for every material change.</p></div></ModulePanel>;
 
   return null;
 }
